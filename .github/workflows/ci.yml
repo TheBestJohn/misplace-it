@@ -17,7 +17,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,7 +54,7 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -84,11 +84,11 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -99,18 +99,22 @@ jobs:
   docker:
     name: Docker images
     runs-on: ubuntu-latest
+    # Job-scoped, not step-scoped: the compose file declares these as required,
+    # so every `docker compose` call needs them — including the log dump and the
+    # teardown, which only run once something has already gone wrong.
+    env:
+      POSTGRES_PASSWORD: ci-password
+      JWT_SECRET: ci-secret-not-used-anywhere-real
+      WEB_PORT: '8088'
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
 
       - name: Validate compose file
-        env:
-          POSTGRES_PASSWORD: ci
-          JWT_SECRET: ci
         run: docker compose config --quiet
 
       - name: Build API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./backend
           push: false
@@ -118,7 +122,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build web image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./frontend
           push: false
@@ -126,10 +130,6 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Bring the whole stack up and check it serves
-        env:
-          POSTGRES_PASSWORD: ci-password
-          JWT_SECRET: ci-secret-not-used-anywhere-real
-          WEB_PORT: '8088'
         run: |
           docker compose up -d --build
           for i in $(seq 1 60); do
