@@ -18,7 +18,15 @@ import {
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Empty, ErrorNote, MacroRow, SourceBadge, Spinner, VerificationBadge } from '@/components/shared'
+import {
+  Empty,
+  ErrorNote,
+  MacroRow,
+  SourceBadge,
+  Spinner,
+  VerificationBadge,
+  foodStatus,
+} from '@/components/shared'
 import FoodForm from '@/components/FoodForm'
 
 /**
@@ -237,9 +245,7 @@ export default function FoodDetailDialog({
                                   {kcal(v.calories_kcal)} / 100 g
                                 </span>
                               </span>
-                              <VerificationBadge
-                                status={v.verified_at ? 'verified' : 'unverified'}
-                              />
+                              <VerificationBadge status={foodStatus(v)} />
                             </li>
                           ))}
                         </ul>

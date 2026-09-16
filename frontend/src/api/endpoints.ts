@@ -4,6 +4,7 @@ import type {
   AdminUserRow,
   ApiKey,
   AuthResponse,
+  InstanceSettings,
   BarcodeLookup,
   DiaryDay,
   DiaryEntry,
@@ -157,6 +158,9 @@ export const api = {
     request<AdminUserRow[]>('/admin/users', { query }),
   adminPatchUser: (id: string, body: { is_admin?: boolean; disabled?: boolean }) =>
     request<AdminUserRow>(`/admin/users/${id}`, { method: 'PATCH', body }),
+  adminSettings: () => request<InstanceSettings>('/admin/settings'),
+  updateAdminSettings: (body: { food_quorum: number }) =>
+    request<InstanceSettings>('/admin/settings', { method: 'PUT', body }),
 
   listRecipes: (query: { q?: string; scope?: 'mine' | 'public' | 'all' } = {}) =>
     request<RecipeSummary[]>('/recipes', { query }),

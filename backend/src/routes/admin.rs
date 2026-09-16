@@ -18,6 +18,7 @@ pub fn router() -> Router<AppState> {
         .route("/stats", get(stats))
         .route("/users", get(users))
         .route("/users/{id}", axum::routing::patch(patch_user))
+        .route("/settings", get(settings).put(update_settings))
 }
 
 /// A user as an administrator sees them: identity, standing, and enough
@@ -252,9 +253,7 @@ pub async fn stats(
     State(state): State<AppState>,
     _admin: AdminUser,
 ) -> ApiResult<Json<AdminStats>> {
-    let quorum = state.config.food_quorum;
-
-    let mut row: AdminStats = sqlx::query_as(
+    let row: AdminStats = sqlx::query_as(
         "SELECT
             (SELECT count(*) FROM users) AS users,
             (SELECT count(*) FROM users WHERE is_admin) AS admins,
@@ -262,10 +261,7 @@ pub async fn stats(
             (SELECT count(*) FROM foods) AS foods,
             (SELECT count(*) FROM foods WHERE variant_of IS NOT NULL) AS food_variants,
             (SELECT count(*) FROM foods WHERE verified_at IS NOT NULL) AS foods_verified,
-            (SELECT count(DISTINCT f.id) FROM foods f
-               JOIN food_verifications v
-                 ON v.food_id = f.id AND v.revision = f.revision AND v.verdict = 'dispute'
-            ) AS foods_disputed,
+            (SELECT count(*) FROM foods WHERE disputed_at IS NOT NULL) AS foods_disputed,
             (SELECT count(*) FROM food_revisions) AS food_revisions,
             (SELECT count(*) FROM recipes) AS recipes,
             (SELECT count(*) FROM recipes WHERE is_public) AS public_recipes,
@@ -275,11 +271,118 @@ pub async fn stats(
             (SELECT count(*) FROM api_keys
               WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
             ) AS active_api_keys,
-            0::bigint AS food_quorum",
+            food_quorum() AS food_quorum",
     )
     .fetch_one(&state.db)
     .await?;
 
-    row.food_quorum = quorum;
     Ok(Json(row))
+}
+
+/// The settings an administrator can change, plus who last changed them.
+#[derive(Debug, Serialize, FromRow, ToSchema)]
+pub struct InstanceSettings {
+    pub food_quorum: i64,
+    /// Null while the instance is still at its installation default, which is
+    /// also the state in which `FOOD_QUORUM` can still seed it at boot.
+    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_by_name: Option<String>,
+}
+
+const SETTINGS_COLUMNS: &str = r#"
+    s.food_quorum::bigint AS food_quorum, s.updated_at, u.display_name AS updated_by_name
+    FROM instance_settings s LEFT JOIN users u ON u.id = s.updated_by
+"#;
+
+#[utoipa::path(
+    get, path = "/api/v1/admin/settings", tag = "admin",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, body = InstanceSettings),
+        (status = 403, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn settings(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> ApiResult<Json<InstanceSettings>> {
+    Ok(Json(
+        sqlx::query_as(&format!("SELECT {SETTINGS_COLUMNS}"))
+            .fetch_one(&state.db)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateSettingsRequest {
+    /// Net confirmations a food revision needs to count as verified. 1 is the
+    /// right answer on a single-user instance, where a second opinion is never
+    /// coming; you still cannot confirm your own edit, so it stays meaningful.
+    #[validate(range(min = 1, max = 50, message = "must be between 1 and 50"))]
+    pub food_quorum: i64,
+}
+
+#[utoipa::path(
+    put, path = "/api/v1/admin/settings", tag = "admin",
+    security(("bearer" = [])),
+    request_body = UpdateSettingsRequest,
+    responses(
+        (status = 200, body = InstanceSettings),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn update_settings(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Json(body): Json<UpdateSettingsRequest>,
+) -> ApiResult<Json<InstanceSettings>> {
+    body.validate()?;
+
+    let mut tx = state.db.begin().await?;
+
+    sqlx::query(
+        "UPDATE instance_settings
+            SET food_quorum = $1, updated_at = now(), updated_by = $2",
+    )
+    .bind(body.food_quorum as i32)
+    .bind(admin.id)
+    .execute(&mut *tx)
+    .await?;
+
+    // `verified_at` caches a comparison against the quorum, so moving the
+    // quorum invalidates every one of them at once. Recomputing here, in the
+    // same transaction, is what keeps the cache honest: lowering the threshold
+    // promotes the foods that already had enough support, and raising it demotes
+    // the ones that no longer do, without waiting for someone to vote again.
+    //
+    // A whole-table update is fine because this runs when an administrator
+    // changes a policy, not on any request path, and it touches only
+    // `verified_at` -- which the snapshot function excludes, so it creates no
+    // revisions and invalidates nobody's votes.
+    let resettled = sqlx::query(
+        "UPDATE foods SET
+            verified_at = CASE
+              WHEN food_is_verified(id, revision) THEN coalesce(verified_at, now())
+              ELSE NULL END,
+            disputed_at = CASE
+              WHEN food_is_disputed(id, revision) THEN coalesce(disputed_at, now())
+              ELSE NULL END
+         WHERE verified_at IS NOT NULL
+            OR disputed_at IS NOT NULL
+            OR food_is_verified(id, revision)
+            OR food_is_disputed(id, revision)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    tracing::info!(
+        quorum = body.food_quorum,
+        foods_resettled = resettled.rows_affected(),
+        "food quorum changed"
+    );
+
+    settings(State(state), admin).await
 }

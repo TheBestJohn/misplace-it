@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import type { Nutrients, TargetProgress, VerificationStatus } from '@/api/types'
+import type { Food, Nutrients, TargetProgress, VerificationStatus } from '@/api/types'
 import { kcal, round } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -156,6 +156,19 @@ export function SourceBadge({ source }: { source: string }) {
       {label}
     </Badge>
   )
+}
+
+/**
+ * A food row's editorial state, from the two cached columns it carries.
+ *
+ * The detail view gets the same answer from vote counts; this exists so a list
+ * can render the badge without an aggregate per result, which the streaming
+ * search in particular cannot afford.
+ */
+export function foodStatus(food: Pick<Food, 'verified_at' | 'disputed_at'>): VerificationStatus {
+  if (food.disputed_at) return 'disputed'
+  if (food.verified_at) return 'verified'
+  return 'unverified'
 }
 
 /**

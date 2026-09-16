@@ -149,7 +149,7 @@ Set in `.env` (see `.env.example`).
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
 | `MAX_UPLOAD_MB` | `15` | Largest accepted photo, before downscaling. |
-| `FOOD_QUORUM` | `2` | Net confirmations a food revision needs to count as verified. Set to `1` on a single-user instance — a second opinion that can never arrive means nothing is ever verified. |
+| `FOOD_QUORUM` | `2` | **Seeds** the verification quorum on a fresh install; after an administrator saves one in the admin area, this is ignored. Set to `1` on a single-user instance — a second opinion that can never arrive means nothing is ever verified. |
 | `TRGM_WORD_THRESHOLD` | `0.4` | Fuzzy-search strictness, 0–1. Lower matches more typos and more noise. |
 | `RUST_LOG` | `nom_inal=info,…` | `tracing-subscriber` filter. |
 
@@ -177,8 +177,11 @@ first. Three things make that safe rather than reckless:
   than inheriting confidence that was given to the numbers it replaced. Nothing
   has to be reset — the old votes simply stop being selected, and stay visible
   as superseded. You cannot vouch for your own edit, disputes are subtracted
-  from confirmations, and `FOOD_QUORUM` sets how many net confirmations an entry
-  needs.
+  from confirmations, and the quorum — how many net confirmations an entry needs
+  — is set in the admin area. Changing it re-evaluates every food in the same
+  transaction: lowering it promotes entries that already had the support,
+  raising it demotes the ones that no longer clear the bar, and nobody's votes
+  are touched either way.
 - *Undoing is additive.* A revert restores an old snapshot as a **new** revision,
   so the edit being undone stays on the record. Deletion closes once anyone else
   has edited or verified an entry; past that the answer is an edit or a revert,
@@ -187,6 +190,21 @@ first. Three things make that safe rather than reckless:
 A re-import from USDA or Open Food Facts refreshes only rows still at revision 1
 — untouched copies of what the provider sent. Past that, somebody has
 deliberately disagreed with upstream, and a refresh must not quietly undo them.
+
+**Policy lives in the database, deployment config lives in the environment.**
+The quorum decides how this community works and is visible to exactly the people
+allowed to change it, so it is a row in `instance_settings` rather than a
+variable that needs shell access and a restart. `FOOD_QUORUM` still seeds a fresh
+install — `updated_at IS NULL` marks an instance nobody has configured yet — and
+stops applying the moment an administrator saves a value, because otherwise every
+restart would silently undo them.
+
+Two columns on `foods`, `verified_at` and `disputed_at`, cache the answer that
+the vote counts imply. They exist so a list — and especially the tiered streaming
+search — can show the state without aggregating votes per result. They are
+recomputed by the same SQL function wherever they can change (a vote, a
+withdrawal, the quorum moving) and cleared by the edit trigger, and the snapshot
+function excludes them so settling a vote never looks like an edit.
 
 **The first account administers the instance.** A self-hosted deployment has no
 outside authority to appoint an owner, so installing it is the authority.

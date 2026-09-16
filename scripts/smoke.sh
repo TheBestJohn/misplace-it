@@ -389,6 +389,10 @@ expect "but are still on the record"         "$(curl -fsS "$BASE/foods/$VAR/veri
 expect "a dispute is louder than silence" \
   "$(curl -fsS -X POST "$BASE/foods/$VAR/verify" -H "$AUTH" -H 'content-type: application/json' -d '{"verdict":"dispute","note":"cooked oats are nearer 71"}' | j "['provenance']['status']")" \
   "disputed"
+# Cached on the row, so a list can say "somebody objected" without aggregating
+# votes per result -- the streaming search in particular cannot afford that.
+expect "and is readable from the list without counting votes" \
+  "$(curl -fsS "$BASE/foods?q=Rolled%20oats" -H "$AUTH" | j " and any(f['disputed_at'] for f in d)")" "True"
 
 # Undoing a bad edit moves the history forward rather than erasing it.
 REVERTED=$(curl -fsS -X POST "$BASE/foods/$VAR/revert" -H "$AUTH2" -H 'content-type: application/json' -d '{"revision":1,"reason":"back to the measured value"}')
@@ -447,6 +451,38 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/admin/stats" -H "$AUTH")" 
   curl -fsS -X PATCH "$BASE/admin/users/$UID2" -H "$AUTH" -H 'content-type: application/json' -d '{"disabled":false}' >/dev/null
   status "restoring it restores access"        200 "$BASE/foods" -H "$AUTH2"
 
+  echo "== instance settings"
+  # The quorum is policy, not deployment configuration: it decides how this
+  # community works, so it is changed from the admin area rather than by
+  # editing a file and restarting a container.
+  expect "the quorum is readable"      "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['food_quorum'] >= 1")" "True"
+  expect "and starts unconfigured"     "$(curl -fsS "$BASE/admin/settings" -H "$AUTH" | j "['updated_at'] is None")" "True"
+  status "a non-admin cannot read it"  403 "$BASE/admin/settings" -H "$AUTH3"
+  status "nor change it"               403 -X PUT "$BASE/admin/settings" -H "$AUTH3" -H 'content-type: application/json' -d '{"food_quorum":1}'
+  status "and zero is refused"         400 -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"food_quorum":0}'
+
+  # $VAR sits at one confirmation short of the default quorum of two, so
+  # lowering the bar has to promote it without anyone voting again.
+  curl -fsS -X POST "$BASE/foods/$VAR/verify" -H "$AUTH" -H 'content-type: application/json' -d '{"verdict":"confirm"}' >/dev/null
+  expect "one confirmation is short at a quorum of two" \
+    "$(curl -fsS "$BASE/foods/$VAR" -H "$AUTH" | j "['provenance']['status']")" "unverified"
+
+  SETTINGS=$(curl -fsS -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"food_quorum":1}')
+  expect "the change is recorded"      "$(echo "$SETTINGS" | j "['food_quorum']")" "1"
+  expect "and attributed"              "$(echo "$SETTINGS" | j "['updated_by_name']")" "Smoke"
+  expect "lowering it promotes what already had the support" \
+    "$(curl -fsS "$BASE/foods/$VAR" -H "$AUTH" | j "['provenance']['status']")" "verified"
+  expect "and the new quorum is what clients are told" \
+    "$(curl -fsS "$BASE/foods/$VAR" -H "$AUTH" | j "['provenance']['quorum']")" "1"
+  expect "a verified-only export sees it now" \
+    "$(curl -fsS "$BASE/foods/export?verified_only=true" -H "$AUTH" | j "['count'] > 0")" "True"
+
+  curl -fsS -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"food_quorum":3}' >/dev/null
+  expect "raising it demotes what no longer clears the bar" \
+    "$(curl -fsS "$BASE/foods/$VAR" -H "$AUTH" | j "['provenance']['status']")" "unverified"
+  expect "stats report the live value" "$(curl -fsS "$BASE/admin/stats" -H "$AUTH" | j "['food_quorum']")" "3"
+  curl -fsS -X PUT "$BASE/admin/settings" -H "$AUTH" -H 'content-type: application/json' -d '{"food_quorum":2}' >/dev/null
+
   # Deletion is closed to everyone else once a food is shared work, but an
   # administrator is the escape hatch for an entry that should not exist.
   JUNK=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"Spam entry","calories_kcal":1,"protein_g":1,"carbs_g":1,"fat_g":1}' | j "['id']")
@@ -464,7 +500,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 36 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 38 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

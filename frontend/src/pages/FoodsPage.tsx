@@ -21,7 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Empty, ErrorNote, SourceBadge, Spinner, VerificationBadge } from '@/components/shared'
+import { Empty, ErrorNote, SourceBadge, Spinner, VerificationBadge, foodStatus } from '@/components/shared'
 import FoodForm from '@/components/FoodForm'
 import FoodDetailDialog from '@/components/FoodDetailDialog'
 
@@ -245,9 +245,7 @@ export default function FoodsPage() {
                           </Badge>
                         )}
                         <SourceBadge source={food.source} />
-                        <VerificationBadge
-                          status={food.verified_at ? 'verified' : 'unverified'}
-                        />
+                        <VerificationBadge status={foodStatus(food)} />
                         {food.created_by === user?.id && (
                           <Badge variant="secondary" className="text-[10px]">
                             Yours

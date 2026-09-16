@@ -59,6 +59,22 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&db).await?;
     tracing::info!("migrations applied");
 
+    // Seed the quorum from the environment, but only while it is still at its
+    // installation default. `updated_at IS NULL` is what marks that: once an
+    // administrator has saved a value, a restart must not quietly undo them.
+    if let Some(quorum) = config.initial_food_quorum {
+        let seeded = sqlx::query(
+            "UPDATE instance_settings SET food_quorum = $1
+             WHERE updated_at IS NULL AND food_quorum <> $1",
+        )
+        .bind(quorum as i32)
+        .execute(&db)
+        .await?;
+        if seeded.rows_affected() > 0 {
+            tracing::info!(quorum, "food quorum seeded from FOOD_QUORUM");
+        }
+    }
+
     let http = reqwest::Client::builder()
         // Open Food Facts asks API clients to identify themselves.
         .user_agent(concat!(

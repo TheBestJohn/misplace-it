@@ -23,11 +23,11 @@ pub struct Config {
     pub photo_dir: String,
     /// Largest accepted upload, before downscaling.
     pub max_upload_bytes: usize,
-    /// Net confirmations a food revision needs before it counts as verified.
-    /// Configurable because the right number depends on how many people use the
-    /// instance: on a single-user deployment two independent checks never
-    /// arrive, and on a public one a single confirmation is worth little.
-    pub food_quorum: i64,
+    /// Seeds the verification quorum on an instance no administrator has
+    /// configured yet. The live value lives in `instance_settings` and is
+    /// changed from the admin area; this only decides where a fresh install
+    /// starts, so a declarative deployment can still choose.
+    pub initial_food_quorum: Option<i64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,10 +67,9 @@ impl Config {
                 .unwrap_or(15)
                 * 1024
                 * 1024,
-            food_quorum: opt("FOOD_QUORUM")
+            initial_food_quorum: opt("FOOD_QUORUM")
                 .and_then(|v| v.parse::<i64>().ok())
-                .filter(|v| *v >= 1)
-                .unwrap_or(2),
+                .filter(|v| (1..=50).contains(v)),
             trgm_word_threshold: opt("TRGM_WORD_THRESHOLD")
                 .and_then(|v| v.parse().ok())
                 .filter(|v: &f64| (0.0..=1.0).contains(v))

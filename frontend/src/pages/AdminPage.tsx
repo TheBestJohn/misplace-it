@@ -17,6 +17,93 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Empty, ErrorNote, Spinner } from '@/components/shared'
 
+/**
+ * The instance's own policy settings.
+ *
+ * The quorum lived in an environment variable, which put it out of reach of
+ * exactly the people allowed to see it — changing it meant shell access and a
+ * restart. It is a decision about how this community works, not about how the
+ * container is wired, so it belongs here.
+ */
+function SettingsCard() {
+  const queryClient = useQueryClient()
+  const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: () => api.adminSettings() })
+  const [draft, setDraft] = useState<string>('')
+
+  // Seeded from the server rather than held in state from the start, so the
+  // field shows the live value on first paint instead of flashing a guess.
+  const current = settings.data?.food_quorum
+  useEffect(() => {
+    if (current !== undefined) setDraft(String(current))
+  }, [current])
+
+  const save = useMutation({
+    mutationFn: () => api.updateAdminSettings({ food_quorum: Number(draft) }),
+    // Every food's verified/unverified state is measured against this number,
+    // so a change re-evaluates all of them server-side; drop the cached food
+    // queries too or the list would keep showing the old badges.
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin'] })
+      queryClient.invalidateQueries({ queryKey: ['foods'] })
+    },
+  })
+
+  const dirty = draft !== '' && Number(draft) !== current
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Verification quorum</CardTitle>
+        <CardDescription>
+          How many net confirmations a food&rsquo;s current numbers need before it counts as
+          verified. Disputes are subtracted, and nobody can confirm their own edit — so 1 is the
+          right answer on a single-user instance, where a second opinion is never coming.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {settings.isLoading && <Spinner />}
+        <ErrorNote error={settings.error} />
+        <ErrorNote error={save.error} />
+
+        <form
+          className="flex flex-wrap items-end gap-3"
+          onSubmit={(e) => {
+            e.preventDefault()
+            save.mutate()
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="quorum">Confirmations needed</Label>
+            <Input
+              id="quorum"
+              type="number"
+              min={1}
+              max={50}
+              className="w-28"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+          </div>
+          <Button type="submit" disabled={!dirty || save.isPending}>
+            {save.isPending ? 'Saving…' : 'Save'}
+          </Button>
+          <p className="text-muted-foreground text-xs">
+            Applies to every food at once: lowering it promotes entries that already had the
+            support, raising it demotes the ones that no longer clear the bar. Nobody&rsquo;s votes
+            are lost either way.
+          </p>
+        </form>
+
+        <p className="text-muted-foreground text-xs">
+          {settings.data?.updated_at
+            ? `Last changed by ${settings.data.updated_by_name ?? 'a former administrator'} ${relativeTime(settings.data.updated_at)}.`
+            : 'Still at its installation default, so FOOD_QUORUM in the environment can still set it at startup. Saving here takes it over for good.'}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
 /** One number and its caption. The stats grid is a dozen of these. */
 function Stat({ label, value, hint }: { label: string; value: number; hint?: string }) {
   return (
@@ -114,6 +201,8 @@ export default function AdminPage() {
           )}
         </CardContent>
       </Card>
+
+      <SettingsCard />
 
       <Card>
         <CardHeader>

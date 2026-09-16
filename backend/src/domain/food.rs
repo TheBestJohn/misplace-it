@@ -17,7 +17,7 @@ use super::nutrients::Nutrients;
 pub const FOOD_COLUMNS: &str = r#"
     id, source, source_id, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
     fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g, serving_label,
-    variant_of, variant_label, revision, verified_at,
+    variant_of, variant_label, revision, verified_at, disputed_at,
     created_by, created_at, updated_at
 "#;
 
@@ -52,6 +52,11 @@ pub struct Food {
     pub revision: i32,
     /// When the current revision reached quorum. Cleared by any edit.
     pub verified_at: Option<DateTime<Utc>>,
+    /// When someone objected to the current revision and nobody has
+    /// out-confirmed them. Cached on the row alongside `verified_at` so a list
+    /// can distinguish "nobody has checked" from "somebody says this is wrong"
+    /// without aggregating votes per result.
+    pub disputed_at: Option<DateTime<Utc>>,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -407,6 +412,12 @@ pub struct FoodExport {
     #[sqlx(skip)]
     #[serde(default)]
     pub status: VerificationStatus,
+    /// Read alongside the counts only to compute `status`. Not exported: a
+    /// threshold belonging to the instance that produced the file would mean
+    /// nothing to the one reading it.
+    #[serde(skip)]
+    #[serde(default)]
+    pub quorum: i64,
 }
 
 /// The whole dataset, shaped to be committed to a git repository: a stable

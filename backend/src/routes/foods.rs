@@ -41,7 +41,7 @@ const F_COLUMNS: &str = r#"
     f.id, f.source, f.source_id, f.name, f.brand, f.upc, f.calories_kcal, f.protein_g,
     f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g, f.saturated_fat_g, f.sodium_mg,
     f.serving_size_g, f.serving_label, f.variant_of, f.variant_label, f.revision,
-    f.verified_at, f.created_by, f.created_at, f.updated_at
+    f.verified_at, f.disputed_at, f.created_by, f.created_at, f.updated_at
 "#;
 
 /// Open a transaction that the history triggers can attribute.
@@ -615,6 +615,7 @@ struct ProvenanceRow {
     last_edit_summary: Option<String>,
     your_verdict: Option<String>,
     authored_current: bool,
+    quorum: i64,
 }
 
 /// Read the editorial state of one food's current revision.
@@ -636,7 +637,8 @@ async fn load_provenance(state: &AppState, food: &Food, viewer: Uuid) -> ApiResu
              eu.display_name                        AS last_edited_by_name,
              r.summary                              AS last_edit_summary,
              mv.verdict                             AS your_verdict,
-             (r.edited_by IS NOT DISTINCT FROM $2)  AS authored_current
+             (r.edited_by IS NOT DISTINCT FROM $2)  AS authored_current,
+             food_quorum()                          AS quorum
          FROM foods f
          LEFT JOIN LATERAL (
              SELECT count(*) FILTER (WHERE verdict = 'confirm') AS confirmations,
@@ -655,14 +657,12 @@ async fn load_provenance(state: &AppState, food: &Food, viewer: Uuid) -> ApiResu
     .fetch_one(&state.db)
     .await?;
 
-    let quorum = state.config.food_quorum;
-
     Ok(FoodProvenance {
         revision: food.revision,
-        status: VerificationStatus::evaluate(row.confirmations, row.disputes, quorum),
+        status: VerificationStatus::evaluate(row.confirmations, row.disputes, row.quorum),
         confirmations: row.confirmations,
         disputes: row.disputes,
-        quorum,
+        quorum: row.quorum,
         verified_at: food.verified_at,
         contributors: row.contributors,
         last_change_kind: row.last_change_kind,
@@ -944,7 +944,7 @@ pub async fn verify(
     .execute(&mut *tx)
     .await?;
 
-    let food = settle_verification(&mut tx, id, state.config.food_quorum).await?;
+    let food = settle_verification(&mut tx, id).await?;
     tx.commit().await?;
 
     Ok(Json(detail(&state, food, user.id).await?))
@@ -973,7 +973,7 @@ pub async fn unverify(
     .execute(&mut *tx)
     .await?;
 
-    let food = settle_verification(&mut tx, id, state.config.food_quorum).await?;
+    let food = settle_verification(&mut tx, id).await?;
     tx.commit().await?;
 
     Ok(Json(detail(&state, food, user.id).await?))
@@ -983,31 +983,22 @@ pub async fn unverify(
 ///
 /// `verified_at` is a cache of something derivable, kept as a column so that
 /// listing and exporting verified foods is an index scan rather than an
-/// aggregate over every vote. It is recomputed on the only two events that can
-/// change it — a vote cast and a vote withdrawn — and cleared by the edit
-/// trigger, so it cannot drift.
-async fn settle_verification(
-    tx: &mut Transaction<'static, Postgres>,
-    id: Uuid,
-    quorum: i64,
-) -> ApiResult<Food> {
+/// aggregate over every vote. It is recomputed on the events that can change
+/// it — a vote cast, a vote withdrawn, and the quorum itself moving — and
+/// cleared by the edit trigger, so it cannot drift.
+async fn settle_verification(tx: &mut Transaction<'static, Postgres>, id: Uuid) -> ApiResult<Food> {
     let row: Food = sqlx::query_as(&format!(
-        "UPDATE foods AS f SET verified_at = CASE
-             WHEN v.confirmations - v.disputes >= $2 AND v.disputes = 0
-               THEN coalesce(f.verified_at, now())
-             ELSE NULL
-           END
-         FROM (
-             SELECT count(*) FILTER (WHERE verdict = 'confirm') AS confirmations,
-                    count(*) FILTER (WHERE verdict = 'dispute') AS disputes
-             FROM food_verifications
-             WHERE food_id = $1 AND revision = (SELECT revision FROM foods WHERE id = $1)
-         ) v
+        "UPDATE foods AS f SET
+            verified_at = CASE
+              WHEN food_is_verified(f.id, f.revision) THEN coalesce(f.verified_at, now())
+              ELSE NULL END,
+            disputed_at = CASE
+              WHEN food_is_disputed(f.id, f.revision) THEN coalesce(f.disputed_at, now())
+              ELSE NULL END
          WHERE f.id = $1
          RETURNING {F_COLUMNS}"
     ))
     .bind(id)
-    .bind(quorum)
     .fetch_one(&mut **tx)
     .await?;
 
@@ -1041,7 +1032,8 @@ pub async fn export(
              f.variant_label,
              f.revision,
              coalesce(v.confirmations, 0) AS confirmations,
-             coalesce(v.disputes, 0)      AS disputes
+             coalesce(v.disputes, 0)      AS disputes,
+             food_quorum()                AS quorum
          FROM foods f
          LEFT JOIN foods p ON p.id = f.variant_of
          LEFT JOIN LATERAL (
@@ -1059,11 +1051,10 @@ pub async fn export(
     .fetch_all(&state.db)
     .await?;
 
-    let quorum = state.config.food_quorum;
     let foods: Vec<FoodExport> = rows
         .into_iter()
         .map(|mut f| {
-            f.status = VerificationStatus::evaluate(f.confirmations, f.disputes, quorum);
+            f.status = VerificationStatus::evaluate(f.confirmations, f.disputes, f.quorum);
             f
         })
         .collect();

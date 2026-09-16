@@ -115,6 +115,8 @@ export interface Food {
   /** Bumped by the server on every substantive edit. */
   revision: number
   verified_at: string | null
+  /** Set when someone objected to the current numbers and nobody outvoted them. */
+  disputed_at: string | null
   created_by: string | null
   created_at: string
   updated_at: string
@@ -206,6 +208,13 @@ export interface AdminUserRow {
   food_edits: number
   active_api_keys: number
   last_activity_at: string | null
+}
+
+export interface InstanceSettings {
+  food_quorum: number
+  /** Null while the instance is still at its installation default. */
+  updated_at: string | null
+  updated_by_name: string | null
 }
 
 export interface AdminStats {
