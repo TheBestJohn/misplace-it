@@ -1,25 +1,52 @@
 # ---- build ----------------------------------------------------------------
-FROM rust:1.94-slim-bookworm AS builder
+# Pinned to the BUILD platform so the compiler always runs natively and
+# cross-compiles to the target, rather than the whole toolchain running under
+# QEMU. An emulated Rust release build takes the better part of an hour and
+# sometimes runs out of memory; cross-compiling costs roughly a native build.
+FROM --platform=$BUILDPLATFORM rust:1.94-slim-bookworm AS builder
+
+ARG TARGETPLATFORM
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config \
+ && apt-get install -y --no-install-recommends \
+      pkg-config gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
+
+# Translate Docker's platform string into a Rust target triple once, so every
+# later step reads the same answer from the same place.
+RUN set -eux; \
+    case "$TARGETPLATFORM" in \
+      linux/amd64) target=x86_64-unknown-linux-gnu ;; \
+      linux/arm64) target=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported platform: $TARGETPLATFORM" >&2; exit 1 ;; \
+    esac; \
+    echo "$target" > /target; \
+    rustup target add "$target"
+
+# `ring`, via rustls, compiles C as well as Rust, so the cross toolchain has to
+# be named for the C compiler and not only the linker.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
 
 # Copy manifests first and build a dummy binary so the dependency graph lands
 # in its own layer. Editing application source then rebuilds in seconds instead
 # of recompiling every crate.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
- && cargo build --release \
+ && cargo build --release --target "$(cat /target)" \
  && rm -rf src
 
 COPY src ./src
 COPY migrations ./migrations
 
-# Touch main.rs so cargo does not reuse the dummy binary's fingerprint.
-RUN touch src/main.rs && cargo build --release
+# Touch main.rs so cargo does not reuse the dummy binary's fingerprint. The
+# binary is copied to a fixed path so the runtime stage need not know the
+# target triple.
+RUN touch src/main.rs \
+ && cargo build --release --target "$(cat /target)" \
+ && cp "target/$(cat /target)/release/nom-inal" /nom-inal
 
 # ---- runtime --------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -29,7 +56,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home app
 
-COPY --from=builder /build/target/release/nom-inal /usr/local/bin/nom-inal
+COPY --from=builder /nom-inal /usr/local/bin/nom-inal
 
 # Create the photo directory in the IMAGE, owned by the runtime user.
 #
@@ -38,7 +65,7 @@ COPY --from=builder /build/target/release/nom-inal /usr/local/bin/nom-inal
 # ownership included. Without this the path does not exist in the image, so
 # Docker creates the mountpoint root:root, the process runs as `app`, and its
 # first write fails with EACCES. The boot-time writability check then does
-# exactly what it should and refuses to start, which is what broke CI.
+# exactly what it should and refuses to start.
 RUN mkdir -p /data/photos && chown -R app:app /data/photos
 
 USER app

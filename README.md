@@ -44,6 +44,32 @@ search returns what the other found plus a note saying which was unavailable.
 
 ## Quick start
 
+Published images live in the GitHub Container Registry, so you can run it
+without a toolchain or a checkout of the source:
+
+```bash
+curl -O https://raw.githubusercontent.com/TheBestJohn/nom-inal/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/TheBestJohn/nom-inal/main/.env.example
+# edit .env: POSTGRES_PASSWORD and JWT_SECRET are required
+
+docker compose pull
+docker compose up -d
+```
+
+Images are `linux/amd64` and `linux/arm64`, so a Pi or an ARM VPS works the
+same as an x86 box.
+
+| Tag | What it is |
+|---|---|
+| `latest` | The most recent released version. |
+| `1.4.2`, `1.4`, `1` | A specific release, and the moving majors above it. |
+| `edge` | The tip of `main`. Current, not vetted. |
+
+Pin `NOM_INAL_VERSION` in `.env` if you would rather upgrades be a decision you
+make than something a `pull` does for you.
+
+### From source
+
 ```bash
 git clone https://github.com/TheBestJohn/nom-inal.git
 cd nom-inal
@@ -55,6 +81,9 @@ cp .env.example .env
 
 docker compose up -d --build
 ```
+
+`--build` is what makes it compile locally rather than pull. Both use the same
+compose file.
 
 Open <http://localhost:8088> and create your account.
 
@@ -110,6 +139,7 @@ Set in `.env` (see `.env.example`).
 | `JWT_SECRET` | — | **Required.** Anyone holding this can mint a token for any account. |
 | `POSTGRES_USER` / `POSTGRES_DB` | `nominal` | |
 | `WEB_PORT` | `8088` | Host port for the UI. |
+| `NOM_INAL_VERSION` | `latest` | Which published image tag to run. |
 | `JWT_TTL_HOURS` | `168` | Session length. |
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
@@ -281,6 +311,25 @@ compute:
 for a budget and `short`/`met` for a goal.
 
 ---
+
+## Releases
+
+Pushing a `v*` tag builds both images for amd64 and arm64 and publishes them to
+`ghcr.io/thebestjohn/nom-inal-{api,web}`:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Every push to `main` publishes `edge` as well, so the pipeline is exercised
+continuously rather than only when a release is cut.
+
+The images cross-compile rather than build under emulation. A Rust release
+build through QEMU takes the better part of an hour and sometimes runs out of
+memory on a hosted runner; compiling natively for a foreign target costs about
+as much as a native build. The frontend goes further — its output is static
+files, identical on every architecture, so only the nginx layer varies.
 
 ## Development
 

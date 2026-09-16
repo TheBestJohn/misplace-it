@@ -1,5 +1,8 @@
 # ---- build ----------------------------------------------------------------
-FROM node:24-alpine AS builder
+# On the BUILD platform: the output is static files, identical on every
+# architecture, so there is nothing to gain from running the toolchain under
+# emulation. Only the nginx layer below varies by platform.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS builder
 
 WORKDIR /build
 
