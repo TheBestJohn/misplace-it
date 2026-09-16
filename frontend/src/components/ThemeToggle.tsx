@@ -6,24 +6,24 @@ import { Button } from '@/components/ui/button'
 type Theme = 'light' | 'dark'
 const KEY = 'misplace-it.theme'
 
-function initial(): Theme {
-  try {
-    const stored = localStorage.getItem(KEY)
-    if (stored === 'light' || stored === 'dark') return stored
-  } catch {
-    // Private mode or blocked storage: fall through to the OS preference.
-  }
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+/**
+ * Read the theme the boot script in index.html already applied, rather than
+ * re-deriving it from storage. One source of truth means the button can never
+ * disagree with the page it is sitting on.
+ */
+function current(): Theme {
+  return document.documentElement.classList.contains('dark') ? 'dark' : 'light'
 }
 
 /**
- * Tailwind's dark variant is driven by a `.dark` class on <html>, so the theme
- * has to be applied imperatively rather than by a media query alone. The
- * preference is a per-viewer convenience, so localStorage is the right home for
- * it — and every access is guarded, since it throws when site data is blocked.
+ * Tailwind's dark variant keys off a `.dark` class on <html>, so the theme is
+ * applied imperatively rather than by a media query alone — that is what lets
+ * an explicit choice override the OS. The preference is a per-viewer
+ * convenience, so localStorage is its right home, and every access is guarded
+ * because it throws when site data is blocked.
  */
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(initial)
+  const [theme, setTheme] = useState<Theme>(current)
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')

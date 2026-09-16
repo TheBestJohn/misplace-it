@@ -2,11 +2,19 @@ import { useState } from 'react'
 
 import { useAuth } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ErrorNote } from '@/components/shared'
+import { ThemeToggle } from '@/components/ThemeToggle'
 
 export default function SignInPage() {
   const { signIn, signUp } = useAuth()
@@ -39,6 +47,9 @@ export default function SignInPage() {
             <span aria-hidden="true">🥗</span> misplace-it
           </CardTitle>
           <CardDescription>Weight, calories, macros and recipes — self-hosted.</CardDescription>
+          <CardAction>
+            <ThemeToggle />
+          </CardAction>
         </CardHeader>
 
         <CardContent>

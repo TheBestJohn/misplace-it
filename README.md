@@ -19,6 +19,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
 | **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
+| **Dark mode** | Follows your OS by default, with a toggle that overrides it. Applied before first paint, so there is no flash of the wrong theme |
 | **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
 | **OpenAPI 3.1** | Generated from the handlers, served at `/api/v1/openapi.json` |
@@ -293,6 +294,12 @@ The UI is **React 19 + Tailwind v4 + shadcn/ui** on Radix primitives. shadcn
 components are copied into the repo rather than installed, so they are ordinary
 source files you can edit. Theme tokens live in `src/index.css`; light and dark
 are the same variables with different values, so retheming is one file.
+
+Dark mode is a `.dark` class on `<html>`, set by a blocking inline script in
+`index.html` before React mounts. That placement is deliberate: applying it from
+a component paints the wrong theme first, and it would never reach the
+signed-out page at all, since the toggle only exists inside the signed-in
+shell.
 
 `useFoodSearch` reads the SSE stream with `fetch` rather than `EventSource`,
 because `EventSource` cannot send an `Authorization` header and the alternative
