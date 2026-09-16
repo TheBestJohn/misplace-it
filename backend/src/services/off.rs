@@ -39,8 +39,6 @@ struct Product {
     #[serde(default)]
     brands: Option<String>,
     #[serde(default)]
-    quantity: Option<String>,
-    #[serde(default)]
     serving_size: Option<String>,
     #[serde(default)]
     serving_quantity: Option<serde_json::Value>,
@@ -49,7 +47,7 @@ struct Product {
 }
 
 const FIELDS: &str =
-    "code,product_name,generic_name,brands,quantity,serving_size,serving_quantity,nutriments";
+    "code,product_name,generic_name,brands,serving_size,serving_quantity,nutriments";
 
 impl OpenFoodFactsClient {
     pub fn new(http: reqwest::Client, base_url: String) -> Self {
@@ -190,7 +188,9 @@ fn map_product(p: Product) -> ExternalFood {
         saturated_fat_g: nutriment(nutr, "saturated-fat_100g"),
         sodium_mg,
         serving_size_g,
-        serving_label: p.serving_size.or(p.quantity),
+        // Deliberately NOT falling back to `quantity`: that is the package
+        // size (e.g. "400 g"), which would read as a serving and mislead.
+        serving_label: p.serving_size,
     }
 }
 
@@ -213,7 +213,6 @@ mod tests {
             product_name: Some("Test".into()),
             generic_name: None,
             brands: Some("Acme, Other".into()),
-            quantity: None,
             serving_size: None,
             serving_quantity: None,
             nutriments: Some(json!({ "salt_100g": 2.5, "energy-kcal_100g": 200.0 })),

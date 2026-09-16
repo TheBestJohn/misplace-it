@@ -269,6 +269,68 @@ mod tests {
     }
 
     #[test]
+    fn maps_a_search_result_to_per_100g_values() {
+        // Shape returned by /foods/search: flat `nutrientId` + `value`.
+        let raw = serde_json::json!({
+            "fdcId": 173944,
+            "description": "Bananas, raw",
+            "brandOwner": null,
+            "servingSize": 118.0,
+            "servingSizeUnit": "g",
+            "householdServingFullText": "1 medium",
+            "foodNutrients": [
+                {"nutrientId": 1008, "value": 89.0,  "unitName": "KCAL"},
+                {"nutrientId": 1003, "value": 1.09,  "unitName": "G"},
+                {"nutrientId": 1005, "value": 22.84, "unitName": "G"},
+                {"nutrientId": 1004, "value": 0.33,  "unitName": "G"},
+                {"nutrientId": 1079, "value": 2.6,   "unitName": "G"},
+                {"nutrientId": 1093, "value": 1.0,   "unitName": "MG"}
+            ]
+        });
+        let parsed: SearchFood = serde_json::from_value(raw).expect("deserializes");
+        let food = map_food(parsed);
+
+        assert_eq!(food.source, "usda");
+        assert_eq!(food.source_id, "173944");
+        assert_eq!(food.calories_kcal, 89.0);
+        assert_eq!(food.protein_g, 1.09);
+        assert_eq!(food.carbs_g, 22.84);
+        assert_eq!(food.fiber_g, Some(2.6));
+        assert_eq!(food.sodium_mg, Some(1.0));
+        assert_eq!(food.serving_size_g, 118.0);
+        assert_eq!(food.serving_label.as_deref(), Some("1 medium"));
+    }
+
+    #[test]
+    fn maps_the_nested_detail_shape_too() {
+        // /food/{id} nests the id under `nutrient` and names the value `amount`.
+        let raw = serde_json::json!({
+            "fdcId": 173944,
+            "description": "Bananas, raw",
+            "brandName": "Acme",
+            "gtinUpc": "0001112223334",
+            "servingSize": 1.0,
+            "servingSizeUnit": "cup",
+            "foodNutrients": [
+                {"nutrient": {"id": 1008}, "amount": 89.0},
+                {"nutrient": {"id": 1003}, "amount": 1.09},
+                {"nutrient": {"id": 2000}, "amount": 12.23}
+            ]
+        });
+        let food = map_detail(&raw);
+
+        assert_eq!(food.name, "Bananas, raw");
+        assert_eq!(food.brand.as_deref(), Some("Acme"));
+        assert_eq!(food.upc.as_deref(), Some("0001112223334"));
+        assert_eq!(food.calories_kcal, 89.0);
+        assert_eq!(food.sugar_g, Some(12.23));
+        // "cup" is not a gram unit, so the 100 g default stands.
+        assert_eq!(food.serving_size_g, 100.0);
+        // Nutrients the payload omits stay absent rather than becoming 0.
+        assert_eq!(food.fiber_g, None);
+    }
+
+    #[test]
     fn non_gram_serving_units_fall_back_to_100g() {
         assert_eq!(serving_grams(Some(1.0), Some("cup")), 100.0);
         assert_eq!(serving_grams(Some(30.0), Some("g")), 30.0);
