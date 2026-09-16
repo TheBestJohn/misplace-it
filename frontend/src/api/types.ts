@@ -159,6 +159,12 @@ export interface RecipeSummary {
   name: string
   description: string | null
   servings: number
+  /** Shared with every account when true. */
+  is_public: boolean
+  /** Only an owner may edit or delete. */
+  is_owner: boolean
+  /** Set on recipes you do not own. */
+  author: string | null
   total_weight_g: number
   item_count: number
   per_serving: Nutrients
@@ -172,6 +178,9 @@ export interface Recipe {
   description: string | null
   instructions: string | null
   servings: number
+  is_public: boolean
+  is_owner: boolean
+  author: string | null
   total_weight_g: number
   items: RecipeItem[]
   total: Nutrients

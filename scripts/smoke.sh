@@ -142,6 +142,15 @@ DAY=$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH")
 expect "an exceeded budget is over" "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='calories_kcal'][0]['status']")" "over"
 expect "an exceeded goal is met"    "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='protein_g'][0]['status']")"     "met"
 
+# Targets are standing settings: set once, they apply to every day, including
+# days in the past and days with nothing logged. Nothing is ever set up daily.
+expect "targets apply to an untouched past day" \
+  "$(curl -fsS "$BASE/diary/day?date=2025-06-30" -H "$AUTH" | j " and [t['nutrient'] for t in d['targets']]")" \
+  "['calories_kcal', 'protein_g']"
+expect "and to a day with no entries at all" \
+  "$(curl -fsS "$BASE/diary/day?date=2025-06-30" -H "$AUTH" | j " and [t['status'] for t in d['targets']]")" \
+  "['under', 'short']"
+
 status "clear one target"        204 -X DELETE "$BASE/targets/protein_g" -H "$AUTH"
 status "clearing it twice 404s"  404 -X DELETE "$BASE/targets/protein_g" -H "$AUTH"
 
@@ -196,6 +205,25 @@ expect "a prefix hits the prefix tier"        "$(sse 'Rolled' | grep -c 'tier":"
 # Whole-string similarity scores this pair at 0.14 and would miss it; word
 # similarity scores the best-matching word and finds it.
 expect "a typo still finds the food"          "$(sse 'Rolld%20oatz' | grep -c '"tier"')"            "1"
+# A multi-word typo must still resolve. Which tier catches it is an
+# implementation detail — the indexed one often does — so assert that it is
+# found, and separately that the scanning per-word tier is never run for a
+# single-word query, where the index alone is enough.
+expect "a multi-word typo finds it too"       "$(sse 'rolld%20oatts' | grep -c '\"tier\"')"        "1"
+expect "per-word tier is skipped when unneeded" "$(sse 'oatz' | grep -c 'fuzzy_words')"             "0"
+
+# A global food table accumulates the same product added by different people.
+DUPE='{"name":"Smoke dupe probe","calories_kcal":100,"protein_g":5,"carbs_g":10,"fat_g":2,"serving_size_g":100}'
+curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' -d "$DUPE" >/dev/null
+curl -fsS -X POST "$BASE/foods" -H "$OAUTH" -H 'content-type: application/json' -d "$DUPE" >/dev/null
+expect "identical foods collapse to one result" \
+  "$(sse 'Smoke%20dupe%20probe' | grep -o '"name":"Smoke dupe probe"' | wc -l | tr -d ' ')" "1"
+
+# ...but two foods that merely share a name are different things, and both stay.
+curl -fsS -X POST "$BASE/foods" -H "$OAUTH" -H 'content-type: application/json' \
+  -d '{"name":"Smoke dupe probe","calories_kcal":250,"protein_g":9,"carbs_g":30,"fat_g":8,"serving_size_g":100}' >/dev/null
+expect "a nutritionally different namesake is kept" \
+  "$(sse 'Smoke%20dupe%20probe' | grep -o '"name":"Smoke dupe probe"' | wc -l | tr -d ' ')" "2"
 expect "the stream always ends with done"     "$(sse 'oats' | grep -c 'event: done')"               "1"
 expect "an empty query ends cleanly"          "$(sse '' | grep -c 'event: done')"                   "1"
 expect "a miss returns no tiers"              "$(sse 'zzzzznotafood' | grep -c '"tier"')"           "0"

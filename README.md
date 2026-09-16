@@ -15,7 +15,9 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Weight tracking** | One weigh-in per day with optional body-fat %, trend chart, 7-entry moving average, kg/lb toggle, target line |
 | **Calorie & macro diary** | Log foods by weight or recipes by serving, grouped into breakfast/lunch/dinner/snack, with progress against your daily targets |
 | **Recipes** | Build from any food in your library; totals and per-serving macros are computed for you and recalculate live as you edit |
-| **Food database** | Your own custom foods plus anything imported from USDA or Open Food Facts |
+| **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Only a food's author can edit it |
+| **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
+| **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
 | **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
@@ -91,6 +93,7 @@ Set in `.env` (see `.env.example`).
 | `JWT_TTL_HOURS` | `168` | Session length. |
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
+| `TRGM_WORD_THRESHOLD` | `0.4` | Fuzzy-search strictness, 0–1. Lower matches more typos and more noise. |
 | `RUST_LOG` | `misplace_it=info,…` | `tracing-subscriber` filter. |
 
 The API also reads `BIND_ADDR` and `CORS_ORIGINS`; both only matter outside
@@ -113,6 +116,38 @@ so the two quantity columns can never both be set.
 **A recipe's macros are never stored.** They are derived from its ingredients on
 read, which means correcting a food's nutrition retroactively fixes every recipe
 using it, instead of leaving stale copies behind.
+
+**Foods are global; recipes are private by default.** These pull in opposite
+directions deliberately. A food is a fact about a product — "oats are 379 kcal
+per 100 g" is true for everyone, so making each account re-import the same
+barcode is pure duplication. A recipe is authorship: yours until you share it.
+Editing follows creation in both cases: anyone can *use* a food, only its author
+can change it.
+
+**Search streams instead of ranking once.** Logging a meal is the hottest path,
+and a single ranked query is slow twice over — an exact hit waits behind a
+trigram scan, and a typo returns nothing. So the search runs as progressively
+looser tiers (`exact` → `prefix` → `contains` → `fuzzy` → `fuzzy_words`), each
+flushed over Server-Sent Events the moment it returns. The first lands in single
+-digit milliseconds, so the list is populated while the fuzzy scan is still
+running.
+
+**Fuzzy matching uses word similarity, not whole-string similarity.** "chikn"
+against "Chicken breast, raw" scores 0.14 by `similarity()` — diluted by the
+length of the whole name — but 0.50 by `word_similarity()`, which compares the
+query against the best-matching word. Both use the GIN trigram indexes. Postgres
+defaults the threshold to 0.6, tuned for whole documents and too strict for
+autocomplete, so it is lowered to 0.4 (see `TRGM_WORD_THRESHOLD`).
+
+**Identical foods are collapsed in search, before the limit.** A global table
+accumulates the same product entered by several people. Rows matching on name,
+brand and macros are collapsed to the oldest; two foods that merely share a name
+but differ nutritionally are different things and both stay. Collapsing after
+the limit would let five copies of one food consume the entire result budget.
+
+**Targets are standing settings, never set up daily.** A target belongs to you,
+not to a date: set it once and it is evaluated against every day, including past
+days and days with nothing logged.
 
 **A target carries a direction, not just a number.** A budget and a goal are
 the same arithmetic read in opposite directions: 120% of a calorie budget is a
@@ -159,6 +194,7 @@ GET    /health
 
 POST   /auth/register            POST   /auth/login             GET  /auth/me
 GET    /profile                  PATCH  /profile
+GET    /search/foods                     # SSE: tiered, fuzzy, streams as it finds
 GET    /targets                  PUT    /targets          # replaces the whole set
 GET    /targets/{nutrient}       DELETE /targets/{nutrient}
 
@@ -246,9 +282,22 @@ backend/
 frontend/
   src/
     api/              typed client mirroring the API
-    components/       shared UI, including the three-source food picker
+    components/ui/    shadcn/ui primitives (Radix + Tailwind), owned in-tree
+    components/       app components, including the three-source food picker
+    lib/useFoodSearch parses the SSE search stream
     pages/            one per route
+    index.css         the Tailwind v4 theme — every colour token lives here
 ```
+
+The UI is **React 19 + Tailwind v4 + shadcn/ui** on Radix primitives. shadcn
+components are copied into the repo rather than installed, so they are ordinary
+source files you can edit. Theme tokens live in `src/index.css`; light and dark
+are the same variables with different values, so retheming is one file.
+
+`useFoodSearch` reads the SSE stream with `fetch` rather than `EventSource`,
+because `EventSource` cannot send an `Authorization` header and the alternative
+— putting the token in the query string — writes it into every proxy and access
+log on the way.
 
 Queries are runtime-checked rather than `sqlx::query!`-checked, so neither
 `cargo build` nor the Docker build needs a live database.

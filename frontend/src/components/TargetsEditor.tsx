@@ -1,13 +1,22 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 
-import { api } from '../api/endpoints'
-import type { TargetInput } from '../api/endpoints'
-import type { Nutrient, TargetKind } from '../api/types'
-import { Card, ErrorNote, Spinner } from './ui'
+import { api } from '@/api/endpoints'
+import type { TargetInput } from '@/api/endpoints'
+import type { Nutrient, TargetKind } from '@/api/types'
+import { cn } from '@/lib/utils'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { ErrorNote, Spinner } from '@/components/shared'
 
 /**
- * The nutrient vocabulary, mirroring the server's, with the direction each one
+ * The nutrient vocabulary, mirroring the server's, with the direction each
  * defaults to. Protein and fibre are things you try to reach; the rest are
  * things you try to stay under. Every one can be flipped — carbs are a budget
  * when cutting and a goal when bulking.
@@ -38,9 +47,7 @@ interface Row {
 type Rows = Record<Nutrient, Row>
 
 const blankRows = (): Rows =>
-  Object.fromEntries(
-    NUTRIENTS.map((n) => [n.key, { amount: '', kind: n.defaultKind }]),
-  ) as Rows
+  Object.fromEntries(NUTRIENTS.map((n) => [n.key, { amount: '', kind: n.defaultKind }])) as Rows
 
 export interface Suggestion {
   calories: number
@@ -57,19 +64,16 @@ export default function TargetsEditor({ suggestion }: { suggestion: Suggestion |
 
   const targets = useQuery({ queryKey: ['targets'], queryFn: () => api.listTargets() })
 
-  // Hydrate from the server, leaving nutrients with no target blank.
   useEffect(() => {
     if (!targets.data) return
     const next = blankRows()
-    for (const t of targets.data) {
-      next[t.nutrient] = { amount: String(t.amount), kind: t.kind }
-    }
+    for (const t of targets.data) next[t.nutrient] = { amount: String(t.amount), kind: t.kind }
     setRows(next)
   }, [targets.data])
 
   const save = useMutation({
     mutationFn: () => {
-      // PUT replaces the whole set, so a row left blank is a cleared target.
+      // PUT replaces the whole set, so a blank row is a cleared target.
       const payload: TargetInput[] = NUTRIENTS.flatMap((n) => {
         const row = rows[n.key]
         const amount = Number(row.amount)
@@ -80,7 +84,7 @@ export default function TargetsEditor({ suggestion }: { suggestion: Suggestion |
     },
     onSuccess: () => {
       // The diary and dashboard read targets through their day query, so both
-      // have to be refreshed, not just this list.
+      // need refreshing, not just this list.
       queryClient.invalidateQueries({ queryKey: ['targets'] })
       queryClient.invalidateQueries({ queryKey: ['diary'] })
       setSaved(true)
@@ -108,109 +112,118 @@ export default function TargetsEditor({ suggestion }: { suggestion: Suggestion |
   if (targets.isLoading) return <Spinner />
 
   return (
-    <Card
-      title="Daily goals & budgets"
-      action={saved ? <span className="note note-ok">Saved</span> : null}
-    >
-      <p className="muted small">
-        A <strong>budget</strong> is a ceiling — stay under it. A <strong>goal</strong> is a floor —
-        hit at least that much. Leave a number blank to not track it.
-      </p>
+    <Card>
+      <CardHeader>
+        <CardTitle>Daily goals &amp; budgets</CardTitle>
+        <CardDescription>
+          A <strong>budget</strong> is a ceiling — stay under it. A <strong>goal</strong> is a floor
+          — hit at least that much. Leave a number blank to not track it.
+        </CardDescription>
+        {saved && (
+          <CardAction>
+            <Badge variant="success">Saved</Badge>
+          </CardAction>
+        )}
+      </CardHeader>
 
-      {suggestion && (
-        <div className="note note-ok suggestion">
-          <div>
-            <strong>Suggested:</strong> {suggestion.calories} kcal budget · {suggestion.protein} g
-            protein goal · {suggestion.carbs} g carbs · {suggestion.fat} g fat · {suggestion.fiber} g
-            fiber
-            <br />
-            <span className="muted small">
-              Mifflin-St Jeor BMR × activity, adjusted for your goal. An estimate — adjust to what
-              the scale actually does.
-            </span>
-          </div>
-          <button type="button" className="button button-small" onClick={applySuggestion}>
-            Use these
-          </button>
-        </div>
-      )}
-
-      <div className="target-rows">
-        {NUTRIENTS.map((n) => {
-          const row = rows[n.key]
-          const active = Number(row.amount) > 0
-          return (
-            <div className={`target-row ${active ? '' : 'target-row-off'}`} key={n.key}>
-              <label className="target-row-label" htmlFor={`target-${n.key}`}>
-                {n.label}
-                {n.hint && <span className="muted small"> {n.hint}</span>}
-              </label>
-
-              <div className="target-row-amount">
-                <input
-                  id={`target-${n.key}`}
-                  type="number"
-                  min={0}
-                  step="any"
-                  inputMode="decimal"
-                  placeholder="—"
-                  value={row.amount}
-                  onChange={(e) => set(n.key, { amount: e.target.value })}
-                />
-                <span className="muted small">{n.unit}</span>
+      <CardContent className="space-y-4">
+        {suggestion && (
+          <Alert variant="success">
+            <AlertDescription className="w-full">
+              <div className="flex w-full flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p>
+                    <strong>Suggested:</strong> {suggestion.calories} kcal budget ·{' '}
+                    {suggestion.protein} g protein goal · {suggestion.carbs} g carbs ·{' '}
+                    {suggestion.fat} g fat · {suggestion.fiber} g fiber
+                  </p>
+                  <p className="text-muted-foreground text-xs">
+                    Mifflin-St Jeor BMR × activity, adjusted for your goal. An estimate — adjust to
+                    what the scale actually does.
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={applySuggestion}>
+                  Use these
+                </Button>
               </div>
+            </AlertDescription>
+          </Alert>
+        )}
 
-              <div className="segmented segmented-small" role="group" aria-label={`${n.label} direction`}>
-                <button
-                  type="button"
-                  disabled={!active}
-                  aria-pressed={row.kind === 'goal'}
-                  className={row.kind === 'goal' ? 'active' : ''}
-                  onClick={() => set(n.key, { kind: 'goal' })}
-                >
-                  Goal
-                </button>
-                <button
-                  type="button"
-                  disabled={!active}
-                  aria-pressed={row.kind === 'budget'}
-                  className={row.kind === 'budget' ? 'active' : ''}
-                  onClick={() => set(n.key, { kind: 'budget' })}
-                >
-                  Budget
-                </button>
-              </div>
-
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`Clear ${n.label} target`}
-                disabled={!active}
-                onClick={() => set(n.key, { amount: '' })}
+        <div className="divide-y">
+          {NUTRIENTS.map((n) => {
+            const row = rows[n.key]
+            const active = Number(row.amount) > 0
+            return (
+              <div
+                key={n.key}
+                className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 py-3 sm:grid-cols-[1fr_7rem_auto_auto]"
               >
-                ✕
-              </button>
-            </div>
-          )
-        })}
-      </div>
+                <Label
+                  htmlFor={`target-${n.key}`}
+                  className={cn(
+                    'col-span-2 font-medium sm:col-span-1',
+                    !active && 'text-muted-foreground',
+                  )}
+                >
+                  {n.label}
+                  {n.hint && <span className="text-muted-foreground text-xs">{n.hint}</span>}
+                </Label>
 
-      <ErrorNote error={targets.error} />
-      <ErrorNote error={save.error} />
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    id={`target-${n.key}`}
+                    type="number"
+                    min={0}
+                    step="any"
+                    inputMode="decimal"
+                    placeholder="—"
+                    className="tabular text-right"
+                    value={row.amount}
+                    onChange={(e) => set(n.key, { amount: e.target.value })}
+                  />
+                  <span className="text-muted-foreground w-8 text-xs">{n.unit}</span>
+                </div>
 
-      <div className="form-actions">
-        <button
-          type="button"
-          className="button button-primary"
-          disabled={save.isPending}
-          onClick={() => save.mutate()}
-        >
-          {save.isPending ? 'Saving…' : 'Save targets'}
-        </button>
-        <span className="muted small">
-          {activeCount} of {NUTRIENTS.length} tracked
-        </span>
-      </div>
+                <ToggleGroup
+                  type="single"
+                  size="sm"
+                  value={row.kind}
+                  onValueChange={(v) => v && set(n.key, { kind: v as TargetKind })}
+                  aria-label={`${n.label} direction`}
+                  disabled={!active}
+                  className={cn(!active && 'opacity-50')}
+                >
+                  <ToggleGroupItem value="goal">Goal</ToggleGroupItem>
+                  <ToggleGroupItem value="budget">Budget</ToggleGroupItem>
+                </ToggleGroup>
+
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Clear ${n.label} target`}
+                  disabled={!active}
+                  onClick={() => set(n.key, { amount: '' })}
+                >
+                  <X />
+                </Button>
+              </div>
+            )
+          })}
+        </div>
+
+        <ErrorNote error={targets.error} />
+        <ErrorNote error={save.error} />
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button disabled={save.isPending} onClick={() => save.mutate()}>
+            {save.isPending ? 'Saving…' : 'Save targets'}
+          </Button>
+          <span className="text-muted-foreground text-xs">
+            {activeCount} of {NUTRIENTS.length} tracked
+          </span>
+        </div>
+      </CardContent>
     </Card>
   )
 }

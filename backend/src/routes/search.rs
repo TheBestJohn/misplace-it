@@ -11,6 +11,7 @@
 //!   2. `prefix`   — the name starts with the query
 //!   3. `contains` — the name or brand contains the query
 //!   4. `fuzzy`    — trigram similarity, which survives typos ("chikn")
+//!   5. `fuzzy_words` — every word fuzzy-matches somewhere ("chikn brest")
 //!
 //! The first tier typically lands in single-digit milliseconds, so the list is
 //! populated before the fuzzy scan has finished. SSE is what makes that
@@ -97,9 +98,15 @@ pub async fn stream_foods(
 
         // Ids already sent, so each tier only adds what the tighter ones missed.
         let mut seen: HashSet<Uuid> = HashSet::new();
+        // Because the food table is global, the same product can legitimately
+        // have been added by several people. Rows that are identical in every
+        // way that matters for picking one are collapsed to the first, while
+        // two foods that merely share a name but differ nutritionally both
+        // stay — they are genuinely different things.
+        let mut seen_content: HashSet<String> = HashSet::new();
         let mut total = 0usize;
 
-        for (tier, sql) in tiers() {
+        for (tier, sql) in tiers(&term) {
             let rows: Result<Vec<Food>, _> = sqlx::query_as(sql)
                 .bind(&term)
                 .bind(limit)
@@ -108,8 +115,10 @@ pub async fn stream_foods(
 
             match rows {
                 Ok(rows) => {
-                    let fresh: Vec<Food> =
-                        rows.into_iter().filter(|f| seen.insert(f.id)).collect();
+                    let fresh: Vec<Food> = rows
+                        .into_iter()
+                        .filter(|f| seen.insert(f.id) && seen_content.insert(content_key(f)))
+                        .collect();
 
                     if fresh.is_empty() {
                         continue;
@@ -147,6 +156,25 @@ pub async fn stream_foods(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Identity of a food for duplicate-collapsing: what it is, and what it is
+/// made of. Nutrients are rounded so figures that differ only in float noise
+/// still collapse.
+fn content_key(food: &Food) -> String {
+    format!(
+        "{}|{}|{:.1}|{:.1}|{:.1}|{:.1}",
+        food.name.trim().to_lowercase(),
+        food.brand
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase(),
+        food.calories_kcal,
+        food.protein_g,
+        food.carbs_g,
+        food.fat_g,
+    )
+}
+
 fn done_event(total: usize, started: Instant) -> Event {
     Event::default()
         .event("done")
@@ -159,13 +187,25 @@ fn done_event(total: usize, started: Instant) -> Event {
 
 /// The tiers, tightest first. Each takes the search term as `$1` and a row
 /// limit as `$2`.
-fn tiers() -> [(&'static str, &'static str); 4] {
-    [
+fn tiers(term: &str) -> Vec<(&'static str, &'static str)> {
+    let mut tiers = vec![
         ("exact", const_format::exact()),
         ("prefix", const_format::prefix()),
         ("contains", const_format::contains()),
         ("fuzzy", const_format::fuzzy()),
-    ]
+    ];
+
+    // `<%` looks for ONE contiguous matching extent, so it finds "chikn" but
+    // not "chikn brest" — two misspelled words never form one extent. The
+    // per-word tier covers that, and is gated on a multi-word query because it
+    // cannot use the trigram index and so scans. That scan is affordable
+    // precisely because of the streaming design: the tiers above have already
+    // been flushed, so the user is reading results while this one runs.
+    if term.split_whitespace().count() > 1 {
+        tiers.push(("fuzzy_words", const_format::fuzzy_words()));
+    }
+
+    tiers
 }
 
 /// The SQL lives here rather than inline so each tier reads as one idea.
@@ -173,30 +213,56 @@ mod const_format {
     use super::COLUMNS;
     use std::sync::OnceLock;
 
-    macro_rules! cached {
-        ($name:ident, $body:expr) => {
+    /// Fields that decide whether two rows are the same food.
+    ///
+    /// The table is global, so the same product can have been added by several
+    /// people. Rows identical in all of these are the same thing; two foods
+    /// sharing only a name but differing nutritionally are not, and both stay.
+    const IDENTITY: &str = "lower(btrim(name)), lower(btrim(coalesce(brand, ''))), \
+         round(calories_kcal::numeric, 1), round(protein_g::numeric, 1), \
+         round(carbs_g::numeric, 1), round(fat_g::numeric, 1)";
+
+    /// Every tier has the same shape: match, collapse duplicates, rank, limit.
+    ///
+    /// The collapse has to happen BEFORE the limit. Deduplicating afterwards
+    /// lets five copies of one food consume the whole result budget and hide
+    /// everything else that matched.
+    fn tier_sql(predicate: &str, rank: &str) -> String {
+        format!(
+            "SELECT {cols} FROM (
+                 SELECT DISTINCT ON ({identity}) *
+                 FROM foods
+                 WHERE {predicate}
+                 -- DISTINCT ON keeps the first row per group, so order by the
+                 -- identity first and then oldest-wins within each group.
+                 ORDER BY {identity}, created_at ASC
+             ) foods
+             ORDER BY {rank}
+             LIMIT $2",
+            cols = COLUMNS,
+            identity = IDENTITY,
+            predicate = predicate,
+            rank = rank,
+        )
+    }
+
+    macro_rules! tier {
+        ($name:ident, $predicate:expr, $rank:expr) => {
             pub fn $name() -> &'static str {
                 static SQL: OnceLock<String> = OnceLock::new();
-                SQL.get_or_init(|| format!($body, cols = COLUMNS))
+                SQL.get_or_init(|| tier_sql($predicate, $rank))
             }
         };
     }
 
-    cached!(
-        exact,
-        "SELECT {cols} FROM foods WHERE lower(name) = lower($1) ORDER BY name LIMIT $2"
-    );
+    tier!(exact, "lower(name) = lower($1)", "name");
 
-    cached!(
-        prefix,
-        "SELECT {cols} FROM foods WHERE name ILIKE $1 || '%' ORDER BY length(name), name LIMIT $2"
-    );
+    tier!(prefix, "name ILIKE $1 || '%'", "length(name), name");
 
-    cached!(
+    tier!(
         contains,
-        "SELECT {cols} FROM foods
-         WHERE name ILIKE '%' || $1 || '%' OR brand ILIKE '%' || $1 || '%'
-         ORDER BY length(name), name LIMIT $2"
+        "name ILIKE '%' || $1 || '%' OR brand ILIKE '%' || $1 || '%'",
+        "length(name), name"
     );
 
     // `<%` is pg_trgm's WORD similarity operator, and the choice matters.
@@ -208,13 +274,25 @@ mod const_format {
     //
     // The threshold lives on the connection (see `Config::trgm_word_threshold`)
     // because `<%` reads it from a GUC rather than taking it inline.
-    cached!(
+    tier!(
         fuzzy,
-        "SELECT {cols} FROM foods
-         WHERE $1 <% name OR $1 <% COALESCE(brand, '')
-         ORDER BY GREATEST(word_similarity($1, name),
-                           word_similarity($1, COALESCE(brand, ''))) DESC,
-                  length(name), name
-         LIMIT $2"
+        "$1 <% name OR $1 <% COALESCE(brand, '')",
+        "GREATEST(word_similarity($1, name), word_similarity($1, COALESCE(brand, ''))) DESC, \
+         length(name), name"
+    );
+
+    // Every word of the query has to fuzzy-match somewhere in the name or
+    // brand, which keeps "chikn brest" precise instead of returning everything
+    // that looks a bit like "brest". `bool_and` over no rows is NULL, so a
+    // query of only very short words coalesces to no match rather than to all.
+    tier!(
+        fuzzy_words,
+        "COALESCE((
+             SELECT bool_and(w <% foods.name OR w <% COALESCE(foods.brand, ''))
+             FROM unnest(string_to_array(lower(btrim($1)), ' ')) AS w
+             WHERE length(w) >= 3
+         ), false)",
+        "GREATEST(word_similarity($1, name), word_similarity($1, COALESCE(brand, ''))) DESC, \
+         length(name), name"
     );
 }

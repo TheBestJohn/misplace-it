@@ -1,15 +1,24 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, Globe, Plus, X } from 'lucide-react'
 
-import { api } from '../api/endpoints'
-import type { RecipeInput } from '../api/endpoints'
-import type { Food, Nutrients } from '../api/types'
-import { grams, kcal, round } from '../lib/format'
-import FoodPicker from '../components/FoodPicker'
-import { Card, ErrorNote, MacroRow, Modal, Spinner } from '../components/ui'
+import { api } from '@/api/endpoints'
+import type { RecipeInput } from '@/api/endpoints'
+import type { Food, Nutrients } from '@/api/types'
+import { grams, kcal, round } from '@/lib/format'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
+import FoodPicker from '@/components/FoodPicker'
+import { Empty, ErrorNote, MacroRow, Spinner } from '@/components/shared'
 
-/** An ingredient being edited, carrying the per-100g figures for live totals. */
+/** An ingredient being edited, carrying per-100g figures for live totals. */
 interface DraftItem {
   key: string
   food_id: string
@@ -17,6 +26,17 @@ interface DraftItem {
   brand: string | null
   quantity_g: number
   per100: Pick<Food, 'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'>
+}
+
+const ZERO: Nutrients = {
+  calories_kcal: 0,
+  protein_g: 0,
+  carbs_g: 0,
+  fat_g: 0,
+  fiber_g: 0,
+  sugar_g: 0,
+  saturated_fat_g: 0,
+  sodium_mg: 0,
 }
 
 export default function RecipeEditorPage() {
@@ -29,6 +49,7 @@ export default function RecipeEditorPage() {
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
   const [servings, setServings] = useState('1')
+  const [isPublic, setIsPublic] = useState(false)
   const [items, setItems] = useState<DraftItem[]>([])
   const [picking, setPicking] = useState(false)
 
@@ -38,17 +59,18 @@ export default function RecipeEditorPage() {
     enabled: !isNew,
   })
 
-  // Hydrate the form once the recipe arrives. The saved recipe stores only the
-  // food id and gram amount, so re-fetch each food's per-100g figures to keep
-  // the live totals below accurate while editing.
+  const readOnly = !isNew && existing.data ? !existing.data.is_owner : false
+
+  // Hydrate once the recipe arrives. Per-100g figures are recovered from the
+  // stored per-item totals, so the live arithmetic below stays accurate.
   useEffect(() => {
     const recipe = existing.data
     if (!recipe) return
-
     setName(recipe.name)
     setDescription(recipe.description ?? '')
     setInstructions(recipe.instructions ?? '')
     setServings(String(recipe.servings))
+    setIsPublic(recipe.is_public)
     setItems(
       recipe.items.map((item) => ({
         key: item.id,
@@ -56,7 +78,6 @@ export default function RecipeEditorPage() {
         name: item.food_name,
         brand: item.food_brand,
         quantity_g: item.quantity_g,
-        // Recover per-100g from the stored per-item totals.
         per100: {
           calories_kcal: (item.nutrients.calories_kcal / item.quantity_g) * 100,
           protein_g: (item.nutrients.protein_g / item.quantity_g) * 100,
@@ -74,7 +95,8 @@ export default function RecipeEditorPage() {
         description: description || null,
         instructions: instructions || null,
         servings: Number(servings),
-        items: items.map((item) => ({ food_id: item.food_id, quantity_g: item.quantity_g })),
+        is_public: isPublic,
+        items: items.map((i) => ({ food_id: i.food_id, quantity_g: i.quantity_g })),
       }
       return isNew ? api.createRecipe(payload) : api.updateRecipe(id!, payload)
     },
@@ -86,24 +108,18 @@ export default function RecipeEditorPage() {
 
   const servingCount = Number(servings) > 0 ? Number(servings) : 1
 
-  // Totals recompute as you type; the server recomputes them the same way on
-  // save, so what you see here is what gets stored.
-  const total: Nutrients = items.reduce<Nutrients>(
-    (acc, item) => {
-      const f = item.quantity_g / 100
-      return {
-        calories_kcal: acc.calories_kcal + item.per100.calories_kcal * f,
-        protein_g: acc.protein_g + item.per100.protein_g * f,
-        carbs_g: acc.carbs_g + item.per100.carbs_g * f,
-        fat_g: acc.fat_g + item.per100.fat_g * f,
-        fiber_g: 0,
-        sugar_g: 0,
-        saturated_fat_g: 0,
-        sodium_mg: 0,
-      }
-    },
-    { calories_kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, saturated_fat_g: 0, sodium_mg: 0 },
-  )
+  // Totals recompute as you type, using the same grams/100 scaling the server
+  // applies on save — so what is shown is what gets stored.
+  const total: Nutrients = items.reduce<Nutrients>((acc, item) => {
+    const f = item.quantity_g / 100
+    return {
+      ...acc,
+      calories_kcal: acc.calories_kcal + item.per100.calories_kcal * f,
+      protein_g: acc.protein_g + item.per100.protein_g * f,
+      carbs_g: acc.carbs_g + item.per100.carbs_g * f,
+      fat_g: acc.fat_g + item.per100.fat_g * f,
+    }
+  }, ZERO)
 
   const perServing: Nutrients = {
     ...total,
@@ -113,7 +129,7 @@ export default function RecipeEditorPage() {
     fat_g: total.fat_g / servingCount,
   }
 
-  const totalWeight = items.reduce((sum, item) => sum + item.quantity_g, 0)
+  const totalWeight = items.reduce((sum, i) => sum + i.quantity_g, 0)
 
   const addFood = (food: Food) => {
     setItems((prev) => [
@@ -138,125 +154,205 @@ export default function RecipeEditorPage() {
   if (!isNew && existing.isLoading) return <Spinner />
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <h1>{isNew ? 'New recipe' : 'Edit recipe'}</h1>
-        <button type="button" className="button button-ghost button-small" onClick={() => navigate('/recipes')}>
-          Back
-        </button>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {isNew ? 'New recipe' : readOnly ? name : 'Edit recipe'}
+        </h1>
+        <Button variant="ghost" size="sm" onClick={() => navigate('/recipes')}>
+          <ArrowLeft /> Back
+        </Button>
       </div>
 
       <ErrorNote error={existing.error} />
 
-      <Card title="Details">
-        <div className="form-grid">
-          <label className="field field-wide">
-            <span>Name</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} required autoFocus={isNew} />
-          </label>
-          <label className="field">
-            <span>Servings</span>
-            <input
+      {readOnly && (
+        <Alert>
+          <Globe />
+          <AlertDescription>
+            Shared by {existing.data?.author}. You can view it and log it, but only its author can
+            change it.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Details</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="r-name">Name</Label>
+            <Input
+              id="r-name"
+              required
+              disabled={readOnly}
+              autoFocus={isNew}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="r-servings">Servings</Label>
+            <Input
+              id="r-servings"
               type="number"
               min={0.1}
               step="any"
+              disabled={readOnly}
               value={servings}
               onChange={(e) => setServings(e.target.value)}
             />
-          </label>
-          <label className="field field-wide">
-            <span>Description</span>
-            <input value={description} onChange={(e) => setDescription(e.target.value)} />
-          </label>
-          <label className="field field-wide">
-            <span>Instructions</span>
-            <textarea rows={5} value={instructions} onChange={(e) => setInstructions(e.target.value)} />
-          </label>
-        </div>
+          </div>
+          <div className="space-y-1.5 sm:col-span-3">
+            <Label htmlFor="r-desc">Description</Label>
+            <Input
+              id="r-desc"
+              disabled={readOnly}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5 sm:col-span-3">
+            <Label htmlFor="r-inst">Instructions</Label>
+            <Textarea
+              id="r-inst"
+              rows={5}
+              disabled={readOnly}
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+            />
+          </div>
+
+          {!readOnly && (
+            <div className="flex items-start gap-3 rounded-md border p-3 sm:col-span-3">
+              <Switch
+                id="r-public"
+                checked={isPublic}
+                onCheckedChange={setIsPublic}
+                className="mt-0.5"
+              />
+              <div>
+                <Label htmlFor="r-public">Share this recipe</Label>
+                <p className="text-muted-foreground text-xs">
+                  Recipes are private by default. Sharing lets every account read and log this one;
+                  only you can edit it.
+                </p>
+              </div>
+            </div>
+          )}
+        </CardContent>
       </Card>
 
-      <Card
-        title="Ingredients"
-        action={
-          <button type="button" className="button button-small" onClick={() => setPicking(true)}>
-            + Add ingredient
-          </button>
-        }
-      >
-        {items.length === 0 ? (
-          <p className="empty">No ingredients yet.</p>
-        ) : (
-          <ul className="entry-list">
-            {items.map((item, index) => (
-              <li key={item.key} className="entry">
-                <div className="entry-main">
-                  <span className="entry-name">{item.name}</span>
-                  {item.brand && <span className="muted small">{item.brand}</span>}
-                </div>
-                <label className="inline-field">
-                  <input
-                    type="number"
-                    min={0.1}
-                    step="any"
-                    value={item.quantity_g}
-                    onChange={(e) =>
-                      setItems((prev) =>
-                        prev.map((it, i) =>
-                          i === index ? { ...it, quantity_g: Number(e.target.value) } : it,
-                        ),
-                      )
-                    }
-                  />
-                  <span className="muted small">g</span>
-                </label>
-                <span className="muted small">
-                  {kcal((item.per100.calories_kcal * item.quantity_g) / 100)}
-                </span>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={`Remove ${item.name}`}
-                  onClick={() => setItems((prev) => prev.filter((_, i) => i !== index))}
-                >
-                  ✕
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Ingredients</CardTitle>
+          {!readOnly && (
+            <CardAction>
+              <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
+                <Plus /> Add ingredient
+              </Button>
+            </CardAction>
+          )}
+        </CardHeader>
+        <CardContent>
+          {items.length === 0 ? (
+            <Empty>No ingredients yet.</Empty>
+          ) : (
+            <ul className="divide-y">
+              {items.map((item, index) => (
+                <li key={item.key} className="flex items-center gap-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{item.name}</p>
+                    {item.brand && (
+                      <p className="text-muted-foreground truncate text-xs">{item.brand}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      min={0.1}
+                      step="any"
+                      disabled={readOnly}
+                      className="tabular w-20 text-right"
+                      aria-label={`${item.name} grams`}
+                      value={item.quantity_g}
+                      onChange={(e) =>
+                        setItems((prev) =>
+                          prev.map((it, i) =>
+                            i === index ? { ...it, quantity_g: Number(e.target.value) } : it,
+                          ),
+                        )
+                      }
+                    />
+                    <span className="text-muted-foreground text-xs">g</span>
+                  </div>
+                  <span className="text-muted-foreground tabular w-20 text-right text-xs">
+                    {kcal((item.per100.calories_kcal * item.quantity_g) / 100)}
+                  </span>
+                  {!readOnly && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${item.name}`}
+                      onClick={() => setItems((prev) => prev.filter((_, i) => i !== index))}
+                    >
+                      <X />
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
       </Card>
 
-      <Card title="Nutrition">
-        <div className="nutrition-split">
-          <div>
-            <span className="muted small">Whole recipe · {grams(totalWeight, 0)}</span>
+      <Card>
+        <CardHeader>
+          <CardTitle>Nutrition</CardTitle>
+          <CardDescription>Recomputed as you edit, the same way the server does.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1">
+            <p className="text-muted-foreground text-xs">
+              Whole recipe · {grams(totalWeight, 0)}
+            </p>
             <MacroRow n={total} />
           </div>
-          <div>
-            <span className="muted small">Per serving ({round(servingCount, 2)} servings)</span>
+          <div className="space-y-1">
+            <p className="text-muted-foreground text-xs">
+              Per serving ({round(servingCount, 2)} servings)
+            </p>
             <MacroRow n={perServing} />
           </div>
-        </div>
+        </CardContent>
       </Card>
 
-      <ErrorNote error={save.error} />
-      <div className="form-actions">
-        <button
-          type="button"
-          className="button button-primary"
-          disabled={save.isPending || !name || items.length === 0}
-          onClick={() => save.mutate()}
-        >
-          {save.isPending ? 'Saving…' : isNew ? 'Create recipe' : 'Save changes'}
-        </button>
-        {items.length === 0 && <span className="muted small">Add at least one ingredient.</span>}
-      </div>
-
-      {picking && (
-        <Modal title="Add ingredient" onClose={() => setPicking(false)} wide>
-          <FoodPicker onPick={addFood} />
-        </Modal>
+      {!readOnly && (
+        <>
+          <ErrorNote error={save.error} />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              disabled={save.isPending || !name || items.length === 0}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? 'Saving…' : isNew ? 'Create recipe' : 'Save changes'}
+            </Button>
+            {items.length === 0 && (
+              <span className="text-muted-foreground text-xs">Add at least one ingredient.</span>
+            )}
+          </div>
+        </>
       )}
+
+      <Dialog open={picking} onOpenChange={setPicking}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Add ingredient</DialogTitle>
+          </DialogHeader>
+          <FoodPicker onPick={addFood} />
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

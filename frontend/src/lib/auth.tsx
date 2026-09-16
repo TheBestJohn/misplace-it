@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 
-import { api } from '../api/endpoints'
-import { tokenStore, UNAUTHORIZED_EVENT } from '../api/client'
-import type { Profile } from '../api/types'
+import { api } from '@/api/endpoints'
+import { tokenStore, UNAUTHORIZED_EVENT } from '@/api/client'
+import type { Profile } from '@/api/types'
 
 interface AuthContextValue {
   user: Profile | null

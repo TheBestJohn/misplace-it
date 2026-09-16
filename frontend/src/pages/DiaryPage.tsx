@@ -1,11 +1,26 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronLeft, ChevronRight, Plus, X } from 'lucide-react'
 
-import { api } from '../api/endpoints'
-import type { Food, RecipeSummary } from '../api/types'
-import { addDays, grams, kcal, prettyDate, round, titleCase, today } from '../lib/format'
-import FoodPicker from '../components/FoodPicker'
-import { Card, ErrorNote, MacroRow, Modal, Spinner, TargetList } from '../components/ui'
+import { api } from '@/api/endpoints'
+import type { Food, RecipeSummary } from '@/api/types'
+import { addDays, grams, kcal, prettyDate, round, titleCase, today } from '@/lib/format'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Separator } from '@/components/ui/separator'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import FoodPicker from '@/components/FoodPicker'
+import { Empty, ErrorNote, MacroRow, Spinner, TargetList } from '@/components/shared'
 
 const MEALS = ['breakfast', 'lunch', 'dinner', 'snack']
 
@@ -14,36 +29,37 @@ export default function DiaryPage() {
   const [adding, setAdding] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
-  const day = useQuery({
-    queryKey: ['diary', 'day', date],
-    queryFn: () => api.diaryDay(date),
-  })
+  const day = useQuery({ queryKey: ['diary', 'day', date], queryFn: () => api.diaryDay(date) })
 
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteDiaryEntry(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['diary'] }),
   })
 
-  // The headline number is the calorie target when one exists; every other
-  // target is rendered uniformly by TargetList below.
   const calorieStatus = day.data?.targets.find((t) => t.nutrient === 'calories_kcal')
+  const meals = day.data?.meals ?? MEALS.map((meal) => ({ meal, entries: [], total: null }))
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <h1>Diary</h1>
-        <div className="date-nav">
-          <button type="button" className="button button-ghost" onClick={() => setDate(addDays(date, -1))}>
-            ‹
-          </button>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value || today())} />
-          <button type="button" className="button button-ghost" onClick={() => setDate(addDays(date, 1))}>
-            ›
-          </button>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Diary</h1>
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="icon" onClick={() => setDate(addDays(date, -1))} aria-label="Previous day">
+            <ChevronLeft />
+          </Button>
+          <Input
+            type="date"
+            className="w-auto"
+            value={date}
+            onChange={(e) => setDate(e.target.value || today())}
+          />
+          <Button variant="outline" size="icon" onClick={() => setDate(addDays(date, 1))} aria-label="Next day">
+            <ChevronRight />
+          </Button>
           {date !== today() && (
-            <button type="button" className="button button-ghost" onClick={() => setDate(today())}>
+            <Button variant="ghost" size="sm" onClick={() => setDate(today())}>
               Today
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -52,12 +68,22 @@ export default function DiaryPage() {
       <ErrorNote error={day.error} />
 
       {day.data && (
-        <Card title={prettyDate(date)}>
-          <div className="day-total">
-            <div className="big-number">
-              <strong>{kcal(day.data.total.calories_kcal)}</strong>
+        <Card>
+          <CardHeader>
+            <CardTitle>{prettyDate(date)}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-baseline gap-3">
+              <strong className="tabular text-3xl font-bold tracking-tight">
+                {kcal(day.data.total.calories_kcal)}
+              </strong>
               {calorieStatus && (
-                <span className={calorieStatus.status === 'over' ? 'muted over' : 'muted'}>
+                <span
+                  className={cn(
+                    'text-sm',
+                    calorieStatus.status === 'over' ? 'text-destructive' : 'text-muted-foreground',
+                  )}
+                >
                   {calorieStatus.status === 'over'
                     ? `${kcal(Math.abs(calorieStatus.remaining))} over budget`
                     : `${kcal(calorieStatus.remaining)} left`}
@@ -65,77 +91,80 @@ export default function DiaryPage() {
               )}
             </div>
             <TargetList targets={day.data.targets} />
-          </div>
+          </CardContent>
         </Card>
       )}
 
-      {(day.data?.meals ?? MEALS.map((meal) => ({ meal, entries: [], total: null }))).map((group) => (
-        <Card
-          key={group.meal}
-          title={titleCase(group.meal)}
-          action={
-            <button type="button" className="button button-small" onClick={() => setAdding(group.meal)}>
-              + Add
-            </button>
-          }
-        >
-          {group.entries.length === 0 ? (
-            <p className="empty">Nothing logged.</p>
-          ) : (
-            <ul className="entry-list">
-              {group.entries.map((entry) => (
-                <li key={entry.id} className="entry">
-                  <div className="entry-main">
-                    <span className="entry-name">{entry.name}</span>
-                    <span className="muted small">
-                      {entry.brand ? `${entry.brand} · ` : ''}
-                      {entry.quantity_g != null
-                        ? grams(entry.quantity_g, 0)
-                        : `${round(entry.recipe_servings ?? 0, 2)} serving${
-                            (entry.recipe_servings ?? 0) === 1 ? '' : 's'
-                          }`}
-                    </span>
-                  </div>
-                  <MacroRow n={entry.nutrients} compact />
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={`Remove ${entry.name}`}
-                    onClick={() => remove.mutate(entry.id)}
+      {meals.map((group) => (
+        <Card key={group.meal}>
+          <CardHeader>
+            <CardTitle>{titleCase(group.meal)}</CardTitle>
+            <CardAction>
+              <Button variant="outline" size="sm" onClick={() => setAdding(group.meal)}>
+                <Plus /> Add
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            {group.entries.length === 0 ? (
+              <Empty>Nothing logged.</Empty>
+            ) : (
+              <ul className="divide-y">
+                {group.entries.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 sm:flex-nowrap"
                   >
-                    ✕
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {/* A subtotal only earns its space once a meal has more than one
-              entry — otherwise it just repeats the row above it. */}
-          {group.total && group.entries.length > 1 && (
-            <footer className="card-foot">
-              <span className="muted small">Meal total</span>
-              <MacroRow n={group.total} compact />
-            </footer>
-          )}
+                    <div className="min-w-0 flex-1 basis-full sm:basis-auto">
+                      <p className="truncate font-medium">{entry.name}</p>
+                      <p className="text-muted-foreground truncate text-xs">
+                        {entry.brand ? `${entry.brand} · ` : ''}
+                        {entry.quantity_g != null
+                          ? grams(entry.quantity_g, 0)
+                          : `${round(entry.recipe_servings ?? 0, 2)} serving${
+                              (entry.recipe_servings ?? 0) === 1 ? '' : 's'
+                            }`}
+                      </p>
+                    </div>
+                    <MacroRow n={entry.nutrients} compact />
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${entry.name}`}
+                      onClick={() => remove.mutate(entry.id)}
+                    >
+                      <X />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* A subtotal only earns its space once a meal has more than one
+                entry — otherwise it repeats the row above it. */}
+            {group.total && group.entries.length > 1 && (
+              <>
+                <Separator className="my-2" />
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground text-xs">Meal total</span>
+                  <MacroRow n={group.total} compact />
+                </div>
+              </>
+            )}
+          </CardContent>
         </Card>
       ))}
 
-      {adding && (
-        <AddEntryModal meal={adding} date={date} onClose={() => setAdding(null)} />
-      )}
+      <Dialog open={adding !== null} onOpenChange={(open) => !open && setAdding(null)}>
+        <DialogContent className="sm:max-w-xl">
+          {adding && <AddEntry meal={adding} date={date} onDone={() => setAdding(null)} />}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
 
-function AddEntryModal({
-  meal,
-  date,
-  onClose,
-}: {
-  meal: string
-  date: string
-  onClose: () => void
-}) {
+function AddEntry({ meal, date, onDone }: { meal: string; date: string; onDone: () => void }) {
   const [mode, setMode] = useState<'food' | 'recipe'>('food')
   const [picked, setPicked] = useState<Food | null>(null)
   const [pickedRecipe, setPickedRecipe] = useState<RecipeSummary | null>(null)
@@ -144,20 +173,15 @@ function AddEntryModal({
   const queryClient = useQueryClient()
 
   const recipes = useQuery({
-    queryKey: ['recipes'],
-    queryFn: () => api.listRecipes(),
+    queryKey: ['recipes', 'all'],
+    queryFn: () => api.listRecipes({ scope: 'all' }),
     enabled: mode === 'recipe',
   })
 
   const log = useMutation({
     mutationFn: () =>
       picked
-        ? api.logDiaryEntry({
-            logged_on: date,
-            meal,
-            food_id: picked.id,
-            quantity_g: Number(amount),
-          })
+        ? api.logDiaryEntry({ logged_on: date, meal, food_id: picked.id, quantity_g: Number(amount) })
         : api.logDiaryEntry({
             logged_on: date,
             meal,
@@ -166,12 +190,12 @@ function AddEntryModal({
           }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['diary'] })
-      onClose()
+      onDone()
     },
   })
 
-  // Preview the macros for the amount currently typed, before committing —
-  // the scaling rule is the same one the server applies.
+  // Preview using the same grams/100 scaling the server applies, so what you
+  // see before committing is what gets stored.
   const preview =
     picked && Number(amount) > 0
       ? {
@@ -195,141 +219,127 @@ function AddEntryModal({
         : null
 
   return (
-    <Modal title={`Add to ${titleCase(meal)}`} onClose={onClose} wide>
-      <div className="segmented" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === 'food'}
-          className={mode === 'food' ? 'active' : ''}
-          onClick={() => {
-            setMode('food')
-            setPickedRecipe(null)
-          }}
-        >
-          Food
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === 'recipe'}
-          className={mode === 'recipe' ? 'active' : ''}
-          onClick={() => {
-            setMode('recipe')
-            setPicked(null)
-          }}
-        >
-          Recipe
-        </button>
-      </div>
+    <>
+      <DialogHeader>
+        <DialogTitle>Add to {titleCase(meal)}</DialogTitle>
+        <DialogDescription>{prettyDate(date)}</DialogDescription>
+      </DialogHeader>
 
-      {mode === 'food' &&
-        (picked ? (
-          <div className="picked">
-            <div className="picked-head">
-              <div>
-                <strong>{picked.name}</strong>
-                {picked.brand && <span className="muted small"> · {picked.brand}</span>}
+      <Tabs value={mode} onValueChange={(v) => { setMode(v as typeof mode); setPicked(null); setPickedRecipe(null) }}>
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="food">Food</TabsTrigger>
+          <TabsTrigger value="recipe">Recipe</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="food" className="pt-3">
+          {picked ? (
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-semibold">{picked.name}</p>
+                  {picked.brand && (
+                    <p className="text-muted-foreground truncate text-xs">{picked.brand}</p>
+                  )}
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setPicked(null)}>
+                  Change
+                </Button>
               </div>
-              <button type="button" className="button button-ghost button-small" onClick={() => setPicked(null)}>
-                Change
-              </button>
-            </div>
 
-            <label className="field">
-              <span>Amount (grams)</span>
-              <input
-                type="number"
-                min={1}
-                step="any"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                autoFocus
-              />
-            </label>
+              <div className="space-y-1.5">
+                <Label htmlFor="amount">Amount (grams)</Label>
+                <Input
+                  id="amount"
+                  type="number"
+                  min={1}
+                  step="any"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  autoFocus
+                />
+              </div>
 
-            <div className="quick-amounts">
-              <button type="button" className="chip" onClick={() => setAmount(String(picked.serving_size_g))}>
-                1 serving ({grams(picked.serving_size_g, 0)}
-                {picked.serving_label ? ` · ${picked.serving_label}` : ''})
-              </button>
-              <button type="button" className="chip" onClick={() => setAmount('100')}>
-                100 g
-              </button>
-            </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => setAmount(String(picked.serving_size_g))}>
+                  1 serving ({grams(picked.serving_size_g, 0)}
+                  {picked.serving_label ? ` · ${picked.serving_label}` : ''})
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setAmount('100')}>
+                  100 g
+                </Button>
+              </div>
 
-            {preview && <MacroRow n={preview} />}
-            <ErrorNote error={log.error} />
-            <button
-              type="button"
-              className="button button-primary"
-              disabled={log.isPending || !(Number(amount) > 0)}
-              onClick={() => log.mutate()}
-            >
-              {log.isPending ? 'Saving…' : 'Log it'}
-            </button>
-          </div>
-        ) : (
-          <FoodPicker onPick={setPicked} />
-        ))}
-
-      {mode === 'recipe' &&
-        (pickedRecipe ? (
-          <div className="picked">
-            <div className="picked-head">
-              <strong>{pickedRecipe.name}</strong>
-              <button
-                type="button"
-                className="button button-ghost button-small"
-                onClick={() => setPickedRecipe(null)}
+              {preview && <MacroRow n={preview} />}
+              <ErrorNote error={log.error} />
+              <Button
+                className="w-full"
+                disabled={log.isPending || !(Number(amount) > 0)}
+                onClick={() => log.mutate()}
               >
-                Change
-              </button>
+                {log.isPending ? 'Saving…' : 'Log it'}
+              </Button>
             </div>
-            <label className="field">
-              <span>Servings</span>
-              <input
-                type="number"
-                min={0.1}
-                step="any"
-                value={servings}
-                onChange={(e) => setServings(e.target.value)}
-                autoFocus
-              />
-            </label>
-            {preview && <MacroRow n={preview} />}
-            <ErrorNote error={log.error} />
-            <button
-              type="button"
-              className="button button-primary"
-              disabled={log.isPending || !(Number(servings) > 0)}
-              onClick={() => log.mutate()}
-            >
-              {log.isPending ? 'Saving…' : 'Log it'}
-            </button>
-          </div>
-        ) : (
-          <div className="picker-results">
-            {recipes.isLoading && <Spinner />}
-            <ErrorNote error={recipes.error} />
-            {recipes.data?.length === 0 && <p className="empty">No recipes yet.</p>}
-            {recipes.data?.map((recipe) => (
-              <button
-                key={recipe.id}
-                type="button"
-                className="picker-item"
-                onClick={() => setPickedRecipe(recipe)}
+          ) : (
+            <FoodPicker onPick={setPicked} />
+          )}
+        </TabsContent>
+
+        <TabsContent value="recipe" className="pt-3">
+          {pickedRecipe ? (
+            <div className="space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <p className="truncate font-semibold">{pickedRecipe.name}</p>
+                <Button variant="ghost" size="sm" onClick={() => setPickedRecipe(null)}>
+                  Change
+                </Button>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="servings">Servings</Label>
+                <Input
+                  id="servings"
+                  type="number"
+                  min={0.1}
+                  step="any"
+                  value={servings}
+                  onChange={(e) => setServings(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              {preview && <MacroRow n={preview} />}
+              <ErrorNote error={log.error} />
+              <Button
+                className="w-full"
+                disabled={log.isPending || !(Number(servings) > 0)}
+                onClick={() => log.mutate()}
               >
-                <span className="picker-item-main">
-                  <span className="picker-item-name">{recipe.name}</span>
-                  <span className="muted small">
-                    {kcal(recipe.per_serving.calories_kcal)} per serving · {recipe.servings} servings
+                {log.isPending ? 'Saving…' : 'Log it'}
+              </Button>
+            </div>
+          ) : (
+            <div className="max-h-[46vh] space-y-1.5 overflow-y-auto">
+              {recipes.isLoading && <Spinner />}
+              <ErrorNote error={recipes.error} />
+              {recipes.data?.length === 0 && <Empty>No recipes yet.</Empty>}
+              {recipes.data?.map((recipe) => (
+                <button
+                  key={recipe.id}
+                  type="button"
+                  onClick={() => setPickedRecipe(recipe)}
+                  className="hover:border-primary hover:bg-accent focus-visible:ring-ring/50 flex w-full items-center gap-3 rounded-md border px-3 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-[3px]"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{recipe.name}</span>
+                    <span className="text-muted-foreground block truncate text-xs">
+                      {kcal(recipe.per_serving.calories_kcal)} per serving
+                      {recipe.author ? ` · by ${recipe.author}` : ''}
+                    </span>
                   </span>
-                </span>
-              </button>
-            ))}
-          </div>
-        ))}
-    </Modal>
+                </button>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+    </>
   )
 }

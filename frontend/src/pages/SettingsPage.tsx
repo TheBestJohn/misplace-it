@@ -1,11 +1,23 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 
-import { api } from '../api/endpoints'
-import type { Profile } from '../api/types'
-import { useAuth } from '../lib/auth'
-import { Card, ErrorNote, Spinner } from '../components/ui'
-import TargetsEditor from '../components/TargetsEditor'
+import { api } from '@/api/endpoints'
+import type { Profile } from '@/api/types'
+import { useAuth } from '@/lib/auth'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import TargetsEditor from '@/components/TargetsEditor'
+import { ErrorNote, Spinner } from '@/components/shared'
 
 const ACTIVITY = [
   { value: 'sedentary', label: 'Sedentary (desk job, little exercise)', factor: 1.2 },
@@ -54,7 +66,7 @@ export default function SettingsPage() {
 
   /**
    * Mifflin-St Jeor BMR, scaled by activity, adjusted for the stated goal.
-   * It's an estimate to seed the targets — you can overwrite any of them.
+   * An estimate to seed the targets — every one can be overwritten.
    */
   const suggestion = (() => {
     const weight = latestWeight.data?.[0]?.weight_kg ?? form.target_weight_kg
@@ -83,87 +95,123 @@ export default function SettingsPage() {
   if (profile.isLoading) return <Spinner />
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <h1>Settings</h1>
-      </div>
+    <div className="space-y-4">
+      <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
 
-      <Card title="Profile" action={saved ? <span className="note note-ok">Saved</span> : null}>
-        <div className="form-grid">
-          <label className="field">
-            <span>Name</span>
-            <input value={form.display_name ?? ''} onChange={(e) => set('display_name', e.target.value)} />
-          </label>
-          <label className="field">
-            <span>Email</span>
-            <input value={user?.email ?? ''} disabled />
-          </label>
-          <label className="field">
-            <span>Date of birth</span>
-            <input
-              type="date"
-              value={form.birth_date ?? ''}
-              onChange={(e) => set('birth_date', e.target.value || null)}
-            />
-          </label>
-          <label className="field">
-            <span>Sex</span>
-            <select value={form.sex ?? ''} onChange={(e) => set('sex', e.target.value || null)}>
-              <option value="">Prefer not to say</option>
-              <option value="female">Female</option>
-              <option value="male">Male</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Height (cm)</span>
-            <input type="number" step="any" value={form.height_cm ?? ''} onChange={num('height_cm')} />
-          </label>
-          <label className="field">
-            <span>Target weight (kg)</span>
-            <input
-              type="number"
-              step="any"
-              value={form.target_weight_kg ?? ''}
-              onChange={num('target_weight_kg')}
-            />
-          </label>
-          <label className="field field-wide">
-            <span>Activity level</span>
-            <select
-              value={form.activity_level ?? 'moderate'}
-              onChange={(e) => set('activity_level', e.target.value)}
-            >
-              {ACTIVITY.map((a) => (
-                <option key={a.value} value={a.value}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field field-wide">
-            <span>Goal</span>
-            <select value={form.goal ?? 'maintain'} onChange={(e) => set('goal', e.target.value)}>
-              {GOALS.map((g) => (
-                <option key={g.value} value={g.value}>
-                  {g.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Profile</CardTitle>
+          {saved && (
+            <CardAction>
+              <Badge variant="success">Saved</Badge>
+            </CardAction>
+          )}
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="s-name">Name</Label>
+              <Input
+                id="s-name"
+                value={form.display_name ?? ''}
+                onChange={(e) => set('display_name', e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s-email">Email</Label>
+              <Input id="s-email" value={user?.email ?? ''} disabled />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s-dob">Date of birth</Label>
+              <Input
+                id="s-dob"
+                type="date"
+                value={form.birth_date ?? ''}
+                onChange={(e) => set('birth_date', e.target.value || null)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s-sex">Sex</Label>
+              <Select
+                value={form.sex ?? 'unspecified'}
+                onValueChange={(v) => set('sex', v === 'unspecified' ? null : v)}
+              >
+                <SelectTrigger id="s-sex" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unspecified">Prefer not to say</SelectItem>
+                  <SelectItem value="female">Female</SelectItem>
+                  <SelectItem value="male">Male</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s-height">Height (cm)</Label>
+              <Input
+                id="s-height"
+                type="number"
+                step="any"
+                value={form.height_cm ?? ''}
+                onChange={num('height_cm')}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="s-target">Target weight (kg)</Label>
+              <Input
+                id="s-target"
+                type="number"
+                step="any"
+                value={form.target_weight_kg ?? ''}
+                onChange={num('target_weight_kg')}
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="s-activity">Activity level</Label>
+              <Select
+                value={form.activity_level ?? 'moderate'}
+                onValueChange={(v) => set('activity_level', v)}
+              >
+                <SelectTrigger id="s-activity" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACTIVITY.map((a) => (
+                    <SelectItem key={a.value} value={a.value}>
+                      {a.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label htmlFor="s-goal">Goal</Label>
+              <Select value={form.goal ?? 'maintain'} onValueChange={(v) => set('goal', v)}>
+                <SelectTrigger id="s-goal" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {GOALS.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>
+                      {g.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
 
-        <ErrorNote error={save.error} />
-        <div className="form-actions">
-          <button
-            type="button"
-            className="button button-primary"
-            disabled={save.isPending}
-            onClick={() => save.mutate()}
-          >
-            {save.isPending ? 'Saving…' : 'Save profile'}
-          </button>
-          <span className="muted small">Goals and budgets have their own Save below.</span>
-        </div>
+          <ErrorNote error={save.error} />
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button disabled={save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Saving…' : 'Save profile'}
+            </Button>
+            <span className="text-muted-foreground text-xs">
+              Goals and budgets have their own Save below.
+            </span>
+          </div>
+        </CardContent>
       </Card>
 
       <TargetsEditor suggestion={suggestion} />

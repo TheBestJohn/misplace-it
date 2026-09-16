@@ -1,13 +1,26 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Globe, Lock, Plus, X } from 'lucide-react'
 
-import { api } from '../api/endpoints'
-import { grams } from '../lib/format'
-import { Card, ErrorNote, MacroRow, Spinner } from '../components/ui'
+import { api } from '@/api/endpoints'
+import { grams, kcal } from '@/lib/format'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Empty, ErrorNote, MacroRow, Spinner } from '@/components/shared'
+
+type Scope = 'mine' | 'public'
 
 export default function RecipesPage() {
+  const [scope, setScope] = useState<Scope>('mine')
   const queryClient = useQueryClient()
-  const recipes = useQuery({ queryKey: ['recipes'], queryFn: () => api.listRecipes() })
+
+  const recipes = useQuery({
+    queryKey: ['recipes', scope],
+    queryFn: () => api.listRecipes({ scope }),
+  })
 
   const remove = useMutation({
     mutationFn: (id: string) => api.deleteRecipe(id),
@@ -15,13 +28,26 @@ export default function RecipesPage() {
   })
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <h1>Recipes</h1>
-        <Link className="button button-primary button-small" to="/recipes/new">
-          + New recipe
-        </Link>
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Recipes</h1>
+        <Button asChild size="sm">
+          <Link to="/recipes/new">
+            <Plus /> New recipe
+          </Link>
+        </Button>
       </div>
+
+      <Tabs value={scope} onValueChange={(v) => setScope(v as Scope)}>
+        <TabsList>
+          <TabsTrigger value="mine">
+            <Lock /> Mine
+          </TabsTrigger>
+          <TabsTrigger value="public">
+            <Globe /> Shared
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       {recipes.isLoading && <Spinner />}
       <ErrorNote error={recipes.error} />
@@ -29,38 +55,58 @@ export default function RecipesPage() {
 
       {recipes.data?.length === 0 && (
         <Card>
-          <p className="empty">
-            No recipes yet. Build one from foods in your library and its macros are computed for you.
-          </p>
+          <CardContent>
+            <Empty>
+              {scope === 'mine'
+                ? 'No recipes yet. Build one from any food and its macros are computed for you.'
+                : 'Nobody has shared a recipe yet. Mark one of yours public to share it.'}
+            </Empty>
+          </CardContent>
         </Card>
       )}
 
-      <div className="grid">
+      <div className="grid gap-4 md:grid-cols-2">
         {recipes.data?.map((recipe) => (
-          <Card
-            key={recipe.id}
-            title={<Link to={`/recipes/${recipe.id}`}>{recipe.name}</Link>}
-            action={
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`Delete ${recipe.name}`}
-                onClick={() => remove.mutate(recipe.id)}
-              >
-                ✕
-              </button>
-            }
-          >
-            {recipe.description && <p className="muted">{recipe.description}</p>}
-            <p className="muted small">
-              {recipe.item_count} ingredient{recipe.item_count === 1 ? '' : 's'} ·{' '}
-              {grams(recipe.total_weight_g, 0)} total · {recipe.servings} serving
-              {recipe.servings === 1 ? '' : 's'}
-            </p>
-            <div className="per-serving">
-              <span className="muted small">Per serving</span>
+          <Card key={recipe.id}>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Link to={`/recipes/${recipe.id}`} className="hover:underline">
+                  {recipe.name}
+                </Link>
+                {recipe.is_public && (
+                  <Badge variant="success" className="gap-1">
+                    <Globe className="size-3" /> Shared
+                  </Badge>
+                )}
+              </CardTitle>
+              <CardDescription>
+                {recipe.author ? `by ${recipe.author} · ` : ''}
+                {recipe.item_count} ingredient{recipe.item_count === 1 ? '' : 's'} ·{' '}
+                {grams(recipe.total_weight_g, 0)} · {recipe.servings} serving
+                {recipe.servings === 1 ? '' : 's'}
+              </CardDescription>
+              {recipe.is_owner && (
+                <CardAction>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Delete ${recipe.name}`}
+                    onClick={() => remove.mutate(recipe.id)}
+                  >
+                    <X />
+                  </Button>
+                </CardAction>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-1">
+              {recipe.description && (
+                <p className="text-muted-foreground line-clamp-2 text-sm">{recipe.description}</p>
+              )}
+              <p className="text-muted-foreground text-xs">
+                Per serving · {kcal(recipe.per_serving.calories_kcal)}
+              </p>
               <MacroRow n={recipe.per_serving} />
-            </div>
+            </CardContent>
           </Card>
         ))}
       </div>

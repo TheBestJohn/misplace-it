@@ -1,20 +1,35 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Barcode, Globe, Search } from 'lucide-react'
 
-import { api } from '../api/endpoints'
-import type { ExternalFood, Food } from '../api/types'
-import { kcal, round, sourceLabel } from '../lib/format'
-import { ErrorNote, SourceBadge, Spinner } from './ui'
+import { api } from '@/api/endpoints'
+import type { ExternalFood, Food } from '@/api/types'
+import { kcal, round, sourceLabel } from '@/lib/format'
+import { useFoodSearch, type SearchTier } from '@/lib/useFoodSearch'
+import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { ErrorNote, SourceBadge, Spinner } from '@/components/shared'
 
-type Tab = 'library' | 'search' | 'barcode'
+/** How each tier is labelled in the list. */
+const TIER_LABEL: Record<SearchTier, string> = {
+  exact: 'Exact match',
+  prefix: 'Starts with',
+  contains: 'Contains',
+  fuzzy: 'Did you mean',
+}
 
 /**
- * One search surface over all three food sources.
+ * One surface over all three food sources.
  *
- * External hits are not foods yet — they live upstream. Picking one imports it
- * first (POST /foods/import, which is idempotent on source+id) and hands the
- * caller back a real local food, so callers never have to care where it came
- * from.
+ * The library tab streams from the SSE endpoint, so results appear tier by
+ * tier as the server finds them rather than all at once when the slowest query
+ * finishes. External hits are not foods yet — picking one imports it first
+ * (idempotent on source + id) and hands back a real local food, so callers
+ * never care where it came from.
  */
 export default function FoodPicker({
   onPick,
@@ -23,36 +38,32 @@ export default function FoodPicker({
   onPick: (food: Food) => void
   autoFocus?: boolean
 }) {
-  const [tab, setTab] = useState<Tab>('library')
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
   const [barcode, setBarcode] = useState('')
   const [submittedBarcode, setSubmittedBarcode] = useState('')
+  const [externalTerm, setExternalTerm] = useState('')
   const queryClient = useQueryClient()
 
-  // Debounce so a fast typist doesn't fire a request per keystroke — this
-  // matters most on the external tab, which hits third-party APIs.
+  // Short debounce: the stream is fast enough that this is about not opening a
+  // connection per keystroke, not about hiding latency.
   useEffect(() => {
-    const id = setTimeout(() => setDebounced(term.trim()), 300)
+    const id = setTimeout(() => setDebounced(term.trim()), 180)
     return () => clearTimeout(id)
   }, [term])
 
-  const library = useQuery({
-    queryKey: ['foods', debounced],
-    queryFn: () => api.listFoods({ q: debounced || undefined, limit: 30 }),
-    enabled: tab === 'library',
-  })
+  const search = useFoodSearch(debounced, { limit: 8 })
 
   const external = useQuery({
-    queryKey: ['foods', 'external', debounced],
-    queryFn: () => api.searchExternal(debounced),
-    enabled: tab === 'search' && debounced.length >= 2,
+    queryKey: ['foods', 'external', externalTerm],
+    queryFn: () => api.searchExternal(externalTerm),
+    enabled: externalTerm.trim().length >= 2,
   })
 
   const lookup = useQuery({
     queryKey: ['foods', 'barcode', submittedBarcode],
     queryFn: () => api.lookupBarcode(submittedBarcode),
-    enabled: tab === 'barcode' && submittedBarcode.length >= 6,
+    enabled: submittedBarcode.length >= 6,
     retry: false,
   })
 
@@ -64,129 +75,103 @@ export default function FoodPicker({
     },
   })
 
-  const externalResults = useMemo(() => external.data?.results ?? [], [external.data])
+  // Group by tier so the list can show why each block matched.
+  const grouped = useMemo(() => {
+    const out: { tier: SearchTier; foods: typeof search.results }[] = []
+    for (const food of search.results) {
+      const last = out[out.length - 1]
+      if (last && last.tier === food.tier) last.foods.push(food)
+      else out.push({ tier: food.tier, foods: [food] })
+    }
+    return out
+  }, [search.results])
 
   return (
-    <div className="picker">
-      <div className="segmented" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'library'}
-          className={tab === 'library' ? 'active' : ''}
-          onClick={() => setTab('library')}
-        >
-          My library
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'search'}
-          className={tab === 'search' ? 'active' : ''}
-          onClick={() => setTab('search')}
-        >
-          Food databases
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'barcode'}
-          className={tab === 'barcode' ? 'active' : ''}
-          onClick={() => setTab('barcode')}
-        >
-          Barcode
-        </button>
-      </div>
+    <Tabs defaultValue="library" className="gap-3">
+      <TabsList className="grid w-full grid-cols-3">
+        <TabsTrigger value="library">
+          <Search /> Search
+        </TabsTrigger>
+        <TabsTrigger value="external">
+          <Globe /> Databases
+        </TabsTrigger>
+        <TabsTrigger value="barcode">
+          <Barcode /> Barcode
+        </TabsTrigger>
+      </TabsList>
 
-      {tab === 'barcode' ? (
-        <form
-          className="row"
-          onSubmit={(e) => {
-            e.preventDefault()
-            setSubmittedBarcode(barcode.replace(/\D/g, ''))
-          }}
-        >
-          <input
-            className="grow"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            placeholder="Scan or type a UPC / EAN"
-            value={barcode}
-            onChange={(e) => setBarcode(e.target.value)}
-            autoFocus={autoFocus}
-          />
-          <button type="submit" className="button button-primary">
-            Look up
-          </button>
-        </form>
-      ) : (
-        <input
-          className="picker-search"
-          placeholder={tab === 'library' ? 'Search your foods…' : 'Search USDA and Open Food Facts…'}
+      <TabsContent value="library" className="space-y-3">
+        <Input
+          placeholder="Search foods — typos are fine…"
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           autoFocus={autoFocus}
         />
-      )}
 
-      {tab === 'library' && (
-        <div className="picker-results">
-          {library.isLoading && <Spinner />}
-          <ErrorNote error={library.error} />
-          {library.data?.length === 0 && (
-            <p className="empty">
-              Nothing here yet — try the <strong>Food databases</strong> or{' '}
-              <strong>Barcode</strong> tab to pull one in.
-            </p>
-          )}
-          {library.data?.map((food) => (
-            <button
-              key={food.id}
-              type="button"
-              className="picker-item"
-              onClick={() => onPick(food)}
-            >
-              <span className="picker-item-main">
-                <span className="picker-item-name">{food.name}</span>
-                <span className="muted small">
-                  {food.brand ? `${food.brand} · ` : ''}
-                  {kcal(food.calories_kcal)} / 100 g
-                </span>
-              </span>
-              <SourceBadge source={food.source} />
-            </button>
+        {search.error && <ErrorNote error={search.error} />}
+
+        <div className="max-h-[46vh] space-y-3 overflow-y-auto">
+          {grouped.map((group) => (
+            <div key={group.tier} className="space-y-1.5">
+              <p className="text-muted-foreground px-1 text-[11px] font-medium tracking-wide uppercase">
+                {TIER_LABEL[group.tier]}
+              </p>
+              {group.foods.map((food) => (
+                <FoodRow key={food.id} food={food} onPick={onPick} />
+              ))}
+            </div>
           ))}
+
+          {search.searching && <Spinner label="Searching…" />}
+
+          {!search.searching && debounced && search.results.length === 0 && (
+            <Alert>
+              <AlertDescription>
+                Nothing matched “{debounced}”. Try the <strong>Databases</strong> or{' '}
+                <strong>Barcode</strong> tab to pull one in.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {!debounced && (
+            <p className="text-muted-foreground py-2 text-sm">Start typing to search every food.</p>
+          )}
         </div>
-      )}
 
-      {tab === 'search' && (
-        <div className="picker-results">
-          {debounced.length < 2 && <p className="empty">Type at least two characters.</p>}
-          {external.isFetching && <Spinner label="Searching food databases…" />}
-          <ErrorNote error={external.error} />
-          <ErrorNote error={importFood.error} />
+        {search.elapsedMs !== null && search.results.length > 0 && (
+          <p className="text-muted-foreground text-right text-[11px]">
+            {search.results.length} result{search.results.length === 1 ? '' : 's'} in{' '}
+            {search.elapsedMs}ms
+          </p>
+        )}
+      </TabsContent>
 
-          {external.data?.unavailable?.map((reason) => (
-            <p className="note note-warn" key={reason}>
-              {reason}
-            </p>
-          ))}
-
-          {!external.isFetching && debounced.length >= 2 && externalResults.length === 0 && (
-            <p className="empty">No matches.</p>
-          )}
-
-          {externalResults.map((food) => (
+      <TabsContent value="external" className="space-y-3">
+        <Input
+          placeholder="Search USDA and Open Food Facts…"
+          value={externalTerm}
+          onChange={(e) => setExternalTerm(e.target.value)}
+        />
+        {external.isFetching && <Spinner label="Searching food databases…" />}
+        <ErrorNote error={external.error} />
+        <ErrorNote error={importFood.error} />
+        {external.data?.unavailable.map((reason) => (
+          <Alert variant="warning" key={reason}>
+            <AlertDescription>{reason}</AlertDescription>
+          </Alert>
+        ))}
+        <div className="max-h-[46vh] space-y-1.5 overflow-y-auto">
+          {external.data?.results.map((food) => (
             <button
               key={`${food.source}-${food.source_id}`}
               type="button"
-              className="picker-item"
               disabled={importFood.isPending}
               onClick={() => importFood.mutate(food)}
+              className={rowClass}
             >
-              <span className="picker-item-main">
-                <span className="picker-item-name">{food.name}</span>
-                <span className="muted small">
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{food.name}</span>
+                <span className="text-muted-foreground block truncate text-xs">
                   {food.brand ? `${food.brand} · ` : ''}
                   {kcal(food.calories_kcal)} / 100 g · P {round(food.protein_g)} C{' '}
                   {round(food.carbs_g)} F {round(food.fat_g)}
@@ -195,52 +180,83 @@ export default function FoodPicker({
               <SourceBadge source={food.source} />
             </button>
           ))}
-        </div>
-      )}
-
-      {tab === 'barcode' && (
-        <div className="picker-results">
-          {lookup.isFetching && <Spinner label="Looking up barcode…" />}
-          <ErrorNote error={lookup.error} />
-          <ErrorNote error={importFood.error} />
-
-          {lookup.data?.local && (
-            <>
-              <p className="note">Already in your library.</p>
-              <button
-                type="button"
-                className="picker-item"
-                onClick={() => onPick(lookup.data!.local!)}
-              >
-                <span className="picker-item-main">
-                  <span className="picker-item-name">{lookup.data.local.name}</span>
-                  <span className="muted small">{kcal(lookup.data.local.calories_kcal)} / 100 g</span>
-                </span>
-                <SourceBadge source={lookup.data.local.source} />
-              </button>
-            </>
+          {external.data?.results.length === 0 && !external.isFetching && (
+            <p className="text-muted-foreground py-2 text-sm">No matches.</p>
           )}
+        </div>
+      </TabsContent>
 
-          {lookup.data?.external && !lookup.data.local && (
-            <button
-              type="button"
-              className="picker-item"
-              disabled={importFood.isPending}
-              onClick={() => importFood.mutate(lookup.data!.external!)}
-            >
-              <span className="picker-item-main">
-                <span className="picker-item-name">{lookup.data.external.name}</span>
-                <span className="muted small">
-                  {lookup.data.external.brand ? `${lookup.data.external.brand} · ` : ''}
-                  {sourceLabel(lookup.data.external.source)} ·{' '}
-                  {kcal(lookup.data.external.calories_kcal)} / 100 g
-                </span>
+      <TabsContent value="barcode" className="space-y-3">
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setSubmittedBarcode(barcode.replace(/\D/g, ''))
+          }}
+        >
+          <Input
+            inputMode="numeric"
+            placeholder="Scan or type a UPC / EAN"
+            value={barcode}
+            onChange={(e) => setBarcode(e.target.value)}
+          />
+          <Button type="submit">Look up</Button>
+        </form>
+
+        {lookup.isFetching && <Spinner label="Looking up barcode…" />}
+        <ErrorNote error={lookup.error} />
+        <ErrorNote error={importFood.error} />
+
+        {lookup.data?.local && (
+          <>
+            <Alert>
+              <AlertDescription>Already in the food database.</AlertDescription>
+            </Alert>
+            <FoodRow food={lookup.data.local} onPick={onPick} />
+          </>
+        )}
+
+        {lookup.data?.external && !lookup.data.local && (
+          <button
+            type="button"
+            disabled={importFood.isPending}
+            onClick={() => importFood.mutate(lookup.data!.external!)}
+            className={rowClass}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium">{lookup.data.external.name}</span>
+              <span className="text-muted-foreground block truncate text-xs">
+                {lookup.data.external.brand ? `${lookup.data.external.brand} · ` : ''}
+                {sourceLabel(lookup.data.external.source)} ·{' '}
+                {kcal(lookup.data.external.calories_kcal)} / 100 g
               </span>
-              <span className="badge">Import</span>
-            </button>
-          )}
-        </div>
-      )}
-    </div>
+            </span>
+            <Badge>Import</Badge>
+          </button>
+        )}
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+const rowClass = cn(
+  'flex w-full items-center gap-3 rounded-md border bg-card px-3 py-2 text-left text-sm',
+  'hover:border-primary hover:bg-accent transition-colors',
+  'focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none',
+  'disabled:cursor-wait disabled:opacity-60',
+)
+
+function FoodRow({ food, onPick }: { food: Food; onPick: (food: Food) => void }) {
+  return (
+    <button type="button" onClick={() => onPick(food)} className={rowClass}>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">{food.name}</span>
+        <span className="text-muted-foreground block truncate text-xs">
+          {food.brand ? `${food.brand} · ` : ''}
+          {kcal(food.calories_kcal)} / 100 g
+        </span>
+      </span>
+      <SourceBadge source={food.source} />
+    </button>
   )
 }

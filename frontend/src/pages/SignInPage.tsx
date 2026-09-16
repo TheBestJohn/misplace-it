@@ -1,7 +1,12 @@
 import { useState } from 'react'
 
-import { useAuth } from '../lib/auth'
-import { ErrorNote } from '../components/ui'
+import { useAuth } from '@/lib/auth'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ErrorNote } from '@/components/shared'
 
 export default function SignInPage() {
   const { signIn, signUp } = useAuth()
@@ -17,11 +22,8 @@ export default function SignInPage() {
     setError(null)
     setBusy(true)
     try {
-      if (mode === 'signin') {
-        await signIn(email, password)
-      } else {
-        await signUp(email, password, displayName || email.split('@')[0])
-      }
+      if (mode === 'signin') await signIn(email, password)
+      else await signUp(email, password, displayName || email.split('@')[0])
     } catch (err) {
       setError(err)
     } finally {
@@ -30,79 +32,73 @@ export default function SignInPage() {
   }
 
   return (
-    <div className="auth-page">
-      <form className="auth-card" onSubmit={submit}>
-        <div className="auth-brand">
-          <span aria-hidden="true">🥗</span>
-          <h1>misplace-it</h1>
-        </div>
-        <p className="muted auth-tagline">
-          Weight, calories, macros and recipes — self-hosted.
-        </p>
+    <div className="grid min-h-dvh place-items-center px-4 py-8">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl">
+            <span aria-hidden="true">🥗</span> misplace-it
+          </CardTitle>
+          <CardDescription>Weight, calories, macros and recipes — self-hosted.</CardDescription>
+        </CardHeader>
 
-        <div className="segmented" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === 'signin'}
-            className={mode === 'signin' ? 'active' : ''}
-            onClick={() => setMode('signin')}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === 'signup'}
-            className={mode === 'signup' ? 'active' : ''}
-            onClick={() => setMode('signup')}
-          >
-            Create account
-          </button>
-        </div>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-4">
+            <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="signin">Sign in</TabsTrigger>
+                <TabsTrigger value="signup">Create account</TabsTrigger>
+              </TabsList>
+            </Tabs>
 
-        {mode === 'signup' && (
-          <label className="field">
-            <span>Name</span>
-            <input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Your name"
-              autoComplete="name"
-            />
-          </label>
-        )}
+            {mode === 'signup' && (
+              <div className="space-y-1.5">
+                <Label htmlFor="name">Name</Label>
+                <Input
+                  id="name"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="Your name"
+                  autoComplete="name"
+                />
+              </div>
+            )}
 
-        <label className="field">
-          <span>Email</span>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-          />
-        </label>
+            <div className="space-y-1.5">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+              />
+            </div>
 
-        <label className="field">
-          <span>Password</span>
-          <input
-            type="password"
-            required
-            minLength={mode === 'signup' ? 10 : undefined}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-          />
-          {mode === 'signup' && <small className="muted">At least 10 characters.</small>}
-        </label>
+            <div className="space-y-1.5">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                required
+                minLength={mode === 'signup' ? 10 : undefined}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              />
+              {mode === 'signup' && (
+                <p className="text-muted-foreground text-xs">At least 10 characters.</p>
+              )}
+            </div>
 
-        <ErrorNote error={error} />
+            <ErrorNote error={error} />
 
-        <button type="submit" className="button button-primary" disabled={busy}>
-          {busy ? 'Working…' : mode === 'signin' ? 'Sign in' : 'Create account'}
-        </button>
-      </form>
+            <Button type="submit" className="w-full" disabled={busy}>
+              {busy ? 'Working…' : mode === 'signin' ? 'Sign in' : 'Create account'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   )
 }

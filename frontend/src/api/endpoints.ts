@@ -31,6 +31,8 @@ export interface RecipeInput {
   description?: string | null
   instructions?: string | null
   servings: number
+  /** Private by default; true shares it with every account. */
+  is_public?: boolean
   items: RecipeItemInput[]
 }
 
@@ -100,7 +102,8 @@ export const api = {
   importFood: (body: ExternalFood) =>
     request<FoodDetail>('/foods/import', { method: 'POST', body }),
 
-  listRecipes: (query: { q?: string } = {}) => request<RecipeSummary[]>('/recipes', { query }),
+  listRecipes: (query: { q?: string; scope?: 'mine' | 'public' | 'all' } = {}) =>
+    request<RecipeSummary[]>('/recipes', { query }),
   getRecipe: (id: string) => request<Recipe>(`/recipes/${id}`),
   createRecipe: (body: RecipeInput) => request<Recipe>('/recipes', { method: 'POST', body }),
   updateRecipe: (id: string, body: RecipeInput) =>
