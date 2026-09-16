@@ -268,42 +268,48 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn insert_items(
+async fn insert_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     recipe_id: Uuid,
     user_id: Uuid,
     body: &UpsertRecipeRequest,
 ) -> ApiResult<()> {
-    for (idx, item) in body.items.iter().enumerate() {
-        // Check visibility explicitly so an unknown food id yields a clear 400
-        // rather than a bare foreign-key error.
-        let visible: Option<(Uuid,)> = sqlx::query_as(
-            "SELECT id FROM foods WHERE id = $1 AND (created_by IS NULL OR created_by = $2)",
-        )
-        .bind(item.food_id)
-        .bind(user_id)
-        .fetch_optional(&mut **tx)
-        .await?;
+    let food_ids: Vec<Uuid> = body.items.iter().map(|i| i.food_id).collect();
+    let quantities: Vec<f64> = body.items.iter().map(|i| i.quantity_g).collect();
+    let notes: Vec<Option<String>> = body.items.iter().map(|i| i.note.clone()).collect();
+    let orders: Vec<i32> = (0..body.items.len() as i32).collect();
 
-        if visible.is_none() {
-            return Err(ApiError::bad_request(format!(
-                "unknown food id {}",
-                item.food_id
-            )));
-        }
+    // Validate every ingredient in one query rather than one per item. An
+    // explicit visibility check (instead of relying on the foreign key) is what
+    // lets an unknown id come back as a clear 400 naming the id, and it also
+    // stops a recipe referencing another user's private food.
+    let visible: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM foods
+         WHERE id = ANY($1) AND (created_by IS NULL OR created_by = $2)",
+    )
+    .bind(&food_ids)
+    .bind(user_id)
+    .fetch_all(&mut **tx)
+    .await?;
 
-        sqlx::query(
-            "INSERT INTO recipe_items (recipe_id, food_id, quantity_g, note, sort_order)
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(recipe_id)
-        .bind(item.food_id)
-        .bind(item.quantity_g)
-        .bind(item.note.as_deref())
-        .bind(idx as i32)
-        .execute(&mut **tx)
-        .await?;
+    if let Some(missing) = food_ids.iter().find(|id| !visible.contains(id)) {
+        return Err(ApiError::bad_request(format!("unknown food id {missing}")));
     }
+
+    // One INSERT for the whole ingredient list: UNNEST turns the parallel
+    // arrays into rows, so a 20-ingredient recipe is a single round trip.
+    sqlx::query(
+        "INSERT INTO recipe_items (recipe_id, food_id, quantity_g, note, sort_order)
+         SELECT $1, * FROM UNNEST($2::uuid[], $3::float8[], $4::text[], $5::int[])",
+    )
+    .bind(recipe_id)
+    .bind(&food_ids)
+    .bind(&quantities)
+    .bind(&notes)
+    .bind(&orders)
+    .execute(&mut **tx)
+    .await?;
+
     Ok(())
 }
 

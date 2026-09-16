@@ -411,6 +411,18 @@ pub async fn external_detail(
     _user: CurrentUser,
     Path((source, source_id)): Path<(String, String)>,
 ) -> ApiResult<Json<ExternalFood>> {
+    // This id is interpolated into an upstream URL path, so anything other
+    // than a plain identifier is rejected: a value containing `/` or `..`
+    // could otherwise redirect the request to a different upstream endpoint.
+    if source_id.is_empty()
+        || source_id.len() > 64
+        || !source_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ApiError::bad_request("source_id must be alphanumeric"));
+    }
+
     // Search results from FDC are abridged; this fetches the full record so an
     // import carries every nutrient the source actually publishes.
     let found = match source.as_str() {
