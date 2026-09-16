@@ -20,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Empty, ErrorNote, SourceBadge, Spinner, VerificationBadge, foodStatus } from '@/components/shared'
 import FoodForm from '@/components/FoodForm'
@@ -33,6 +34,10 @@ export default function FoodsPage() {
   const [mineOnly, setMineOnly] = useState(false)
   const [editing, setEditing] = useState<Food | 'new' | null>(null)
   const [openFood, setOpenFood] = useState<string | null>(null)
+  // Per 100 g by default, because that is the only basis in which one row can
+  // be compared with the next -- a 28 g cracker serving against a 240 g bowl of
+  // soup tells you nothing. Flip it to read each row as its own label says.
+  const [tableBasis, setTableBasis] = useState<'per_100g' | 'per_serving'>('per_100g')
   const [barcode, setBarcode] = useState('')
   const [submittedBarcode, setSubmittedBarcode] = useState('')
   const [externalTerm, setExternalTerm] = useState('')
@@ -69,6 +74,10 @@ export default function FoodsPage() {
     mutationFn: (id: string) => api.deleteFood(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['foods'] }),
   })
+
+  // Rows are stored per 100 g, so showing a serving is one multiplication.
+  const basisFactor = (food: Food) =>
+    tableBasis === 'per_serving' ? food.serving_size_g / 100 : 1
 
   return (
     <div className="space-y-4">
@@ -196,7 +205,17 @@ export default function FoodsPage() {
             Shared by everyone — a food is a fact about a product, so anyone can correct one. Every
             change is signed, reversible, and unverified until other people agree with it.
           </CardDescription>
-          <CardAction>
+          <CardAction className="flex flex-wrap items-center gap-3">
+            <ToggleGroup
+              type="single"
+              size="sm"
+              value={tableBasis}
+              onValueChange={(v) => v && setTableBasis(v as 'per_100g' | 'per_serving')}
+              aria-label="Show figures per"
+            >
+              <ToggleGroupItem value="per_100g">100 g</ToggleGroupItem>
+              <ToggleGroupItem value="per_serving">Serving</ToggleGroupItem>
+            </ToggleGroup>
             <Label className="text-muted-foreground text-sm font-normal">
               <Switch checked={mineOnly} onCheckedChange={setMineOnly} />
               Mine only
@@ -256,10 +275,18 @@ export default function FoodsPage() {
                         <span className="text-muted-foreground text-xs">{food.brand}</span>
                       )}
                     </TableCell>
-                    <TableCell className="tabular text-right">{round(food.calories_kcal)}</TableCell>
-                    <TableCell className="tabular text-right">{round(food.protein_g)}</TableCell>
-                    <TableCell className="tabular text-right">{round(food.carbs_g)}</TableCell>
-                    <TableCell className="tabular text-right">{round(food.fat_g)}</TableCell>
+                    <TableCell className="tabular text-right">
+                      {round(food.calories_kcal * basisFactor(food))}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {round(food.protein_g * basisFactor(food))}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {round(food.carbs_g * basisFactor(food))}
+                    </TableCell>
+                    <TableCell className="tabular text-right">
+                      {round(food.fat_g * basisFactor(food))}
+                    </TableCell>
                     <TableCell className="text-muted-foreground text-xs">
                       {grams(food.serving_size_g, 0)}
                       {food.serving_label ? ` · ${food.serving_label}` : ''}
@@ -292,7 +319,11 @@ export default function FoodsPage() {
               </TableBody>
             </Table>
           )}
-          <p className="text-muted-foreground text-xs">All figures are per 100 g.</p>
+          <p className="text-muted-foreground text-xs">
+            {tableBasis === 'per_100g'
+              ? 'All figures are per 100 g, so rows can be compared with each other.'
+              : "Figures are per each food's own serving, shown in the Serving column."}
+          </p>
         </CardContent>
       </Card>
 

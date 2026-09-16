@@ -93,6 +93,7 @@ use utoipa::{Modify, OpenApi};
         crate::domain::food::ExternalFood,
         crate::domain::food::ExternalSearchResponse,
         crate::domain::food::BarcodeLookup,
+        crate::domain::food::NutrientBasis,
         crate::domain::food::FoodProvenance,
         crate::domain::food::FoodRevision,
         crate::domain::food::FoodVerification,

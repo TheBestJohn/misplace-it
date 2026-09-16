@@ -197,17 +197,29 @@ export default function FoodDetailDialog({
                 </TabsList>
 
                 <TabsContent value="facts" className="space-y-4 pt-3">
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground text-xs">Per 100 g</p>
-                    <MacroRow n={per100g(food)} />
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-muted-foreground text-xs">
-                      Per serving · {grams(food.serving_size_g, 0)}
-                      {food.serving_label ? ` · ${food.serving_label}` : ''}
-                    </p>
-                    <MacroRow n={food.per_serving} />
-                  </div>
+                  {/* Both bases, but the food's own first and larger. For a
+                      packaged product that means the panel reads like the label
+                      it was copied from, which is how you check it against the
+                      box in your hand. */}
+                  {(food.nutrient_basis === 'per_serving'
+                    ? (['serving', 'hundred'] as const)
+                    : (['hundred', 'serving'] as const)
+                  ).map((which, index) => (
+                    <div key={which} className="space-y-1">
+                      <p className="text-muted-foreground text-xs">
+                        {which === 'hundred'
+                          ? 'Per 100 g'
+                          : `Per serving · ${grams(food.serving_size_g, 0)}${
+                              food.serving_label ? ` · ${food.serving_label}` : ''
+                            }`}
+                        {index === 0 && food.source === 'custom' && ' · as entered'}
+                      </p>
+                      <MacroRow
+                        n={which === 'hundred' ? per100g(food) : food.per_serving}
+                        compact={index === 1}
+                      />
+                    </div>
+                  ))}
 
                   <Separator />
 

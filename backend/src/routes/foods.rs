@@ -41,7 +41,7 @@ const F_COLUMNS: &str = r#"
     f.id, f.source, f.source_id, f.name, f.brand, f.upc, f.calories_kcal, f.protein_g,
     f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g, f.saturated_fat_g, f.sodium_mg,
     f.serving_size_g, f.serving_label, f.variant_of, f.variant_label, f.revision,
-    f.verified_at, f.disputed_at, f.created_by, f.created_at, f.updated_at
+    f.verified_at, f.disputed_at, f.nutrient_basis, f.created_by, f.created_at, f.updated_at
 "#;
 
 /// Open a transaction that the history triggers can attribute.
@@ -144,31 +144,34 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<FoodDetail>)> {
     body.validate()?;
     body.check_variant().map_err(ApiError::bad_request)?;
+    // Whatever basis the caller typed in, what gets stored is per 100 g.
+    let n = body.per_100g().map_err(ApiError::bad_request)?;
 
     let mut tx = authored_tx(&state, user.id, "create", body.edit_summary.as_deref()).await?;
 
     let row: Food = sqlx::query_as(&format!(
         "INSERT INTO foods (source, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
                             fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g,
-                            serving_label, variant_of, variant_label, created_by)
-         VALUES ('custom', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                            serving_label, variant_of, variant_label, nutrient_basis, created_by)
+         VALUES ('custom', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          RETURNING {COLUMNS}"
     ))
     .bind(body.name.trim())
     .bind(body.brand.as_deref())
     .bind(body.upc.as_deref())
-    .bind(body.calories_kcal)
-    .bind(body.protein_g)
-    .bind(body.carbs_g)
-    .bind(body.fat_g)
-    .bind(body.fiber_g)
-    .bind(body.sugar_g)
-    .bind(body.saturated_fat_g)
-    .bind(body.sodium_mg)
+    .bind(n.calories_kcal)
+    .bind(n.protein_g)
+    .bind(n.carbs_g)
+    .bind(n.fat_g)
+    .bind(n.fiber_g)
+    .bind(n.sugar_g)
+    .bind(n.saturated_fat_g)
+    .bind(n.sodium_mg)
     .bind(body.serving_size_g)
     .bind(body.serving_label.as_deref())
     .bind(body.variant_of)
     .bind(body.variant_label.as_deref().map(str::trim))
+    .bind(body.nutrient_basis.as_str())
     .bind(user.id)
     .fetch_one(&mut *tx)
     .await
@@ -201,6 +204,7 @@ pub async fn update(
 ) -> ApiResult<Json<FoodDetail>> {
     body.validate()?;
     body.check_variant().map_err(ApiError::bad_request)?;
+    let n = body.per_100g().map_err(ApiError::bad_request)?;
 
     // Anyone signed in may edit any food. That is the point of the model: a
     // food is a claim about the world, not the property of whoever typed it in
@@ -218,7 +222,7 @@ pub async fn update(
             name = $2, brand = $3, upc = $4, calories_kcal = $5, protein_g = $6,
             carbs_g = $7, fat_g = $8, fiber_g = $9, sugar_g = $10, saturated_fat_g = $11,
             sodium_mg = $12, serving_size_g = $13, serving_label = $14,
-            variant_of = $15, variant_label = $16
+            variant_of = $15, variant_label = $16, nutrient_basis = $17
          WHERE id = $1
          RETURNING {COLUMNS}"
     ))
@@ -226,18 +230,19 @@ pub async fn update(
     .bind(body.name.trim())
     .bind(body.brand.as_deref())
     .bind(body.upc.as_deref())
-    .bind(body.calories_kcal)
-    .bind(body.protein_g)
-    .bind(body.carbs_g)
-    .bind(body.fat_g)
-    .bind(body.fiber_g)
-    .bind(body.sugar_g)
-    .bind(body.saturated_fat_g)
-    .bind(body.sodium_mg)
+    .bind(n.calories_kcal)
+    .bind(n.protein_g)
+    .bind(n.carbs_g)
+    .bind(n.fat_g)
+    .bind(n.fiber_g)
+    .bind(n.sugar_g)
+    .bind(n.saturated_fat_g)
+    .bind(n.sodium_mg)
     .bind(body.serving_size_g)
     .bind(body.serving_label.as_deref())
     .bind(body.variant_of)
     .bind(body.variant_label.as_deref().map(str::trim))
+    .bind(body.nutrient_basis.as_str())
     .fetch_one(&mut *tx)
     .await
     .map_err(variant_error)?;
@@ -826,7 +831,7 @@ pub async fn revert(
             sugar_g = s.sugar_g, saturated_fat_g = s.saturated_fat_g,
             sodium_mg = s.sodium_mg, serving_size_g = s.serving_size_g,
             serving_label = s.serving_label, variant_of = s.variant_of,
-            variant_label = s.variant_label
+            variant_label = s.variant_label, nutrient_basis = s.nutrient_basis
          FROM (SELECT (jsonb_populate_record(NULL::foods, $2::jsonb)).*) AS s
          WHERE f.id = $1
          RETURNING {F_COLUMNS}"
@@ -1026,6 +1031,7 @@ pub async fn export(
              f.source, f.source_id, f.name, f.brand, f.upc,
              f.calories_kcal, f.protein_g, f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g,
              f.saturated_fat_g, f.sodium_mg, f.serving_size_g, f.serving_label,
+             f.nutrient_basis,
              CASE WHEN f.variant_of IS NULL THEN NULL
                   ELSE lower(btrim(p.name)) || '|' || lower(btrim(coalesce(p.brand, '')))
              END AS variant_of_key,

@@ -108,6 +108,11 @@ export interface Food {
   sodium_mg: number | null
   serving_size_g: number
   serving_label: string | null
+  /**
+   * Which basis these numbers read best in. Storage is always per 100 g — this
+   * says how the food was entered and how it should be shown.
+   */
+  nutrient_basis: NutrientBasis
   /** Set when this row is a preparation variant of another food. */
   variant_of: string | null
   /** `cooked`, `raw`, `drained` — present exactly when `variant_of` is. */
@@ -121,6 +126,9 @@ export interface Food {
   created_at: string
   updated_at: string
 }
+
+/** Which quantity a set of nutrient figures describes. */
+export type NutrientBasis = 'per_100g' | 'per_serving'
 
 /** How much the community trusts a food's *current* revision. */
 export type VerificationStatus = 'unverified' | 'verified' | 'disputed'

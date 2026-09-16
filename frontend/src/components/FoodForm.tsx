@@ -4,26 +4,117 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
 import type { FoodInput } from '@/api/endpoints'
-import type { Food, FoodDetail } from '@/api/types'
+import type { Food, FoodDetail, NutrientBasis } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { ErrorNote } from '@/components/shared'
 
-const EMPTY: FoodInput = {
+/** The nutrient fields, so scaling them between bases is one list, not eight. */
+const NUTRIENT_FIELDS = [
+  'calories_kcal',
+  'protein_g',
+  'carbs_g',
+  'fat_g',
+  'fiber_g',
+  'sugar_g',
+  'saturated_fat_g',
+  'sodium_mg',
+] as const
+
+/**
+ * Trim floating-point dust without losing real precision.
+ *
+ * Converting between bases and back is exact in decimal but not in binary, so
+ * a value that went out as 5 can come back as 5.000000000000001. Six decimals
+ * is well past anything a label prints, and matches what the server rounds to,
+ * so the round trip is stable and re-saving an untouched food does not look
+ * like an edit.
+ */
+const tidy = (v: number) => Math.round(v * 1e6) / 1e6
+
+/** Rescale every nutrient between the per-100 g and per-serving bases. */
+function rebase(form: FoodDraft, to: NutrientBasis): FoodDraft {
+  const serving = form.serving_size_g && form.serving_size_g > 0 ? form.serving_size_g : 100
+  const factor = to === 'per_serving' ? serving / 100 : 100 / serving
+  const out = { ...form, nutrient_basis: to }
+  for (const field of NUTRIENT_FIELDS) {
+    const value = out[field]
+    if (typeof value === 'number') out[field] = tidy(value * factor)
+  }
+  return out
+}
+
+/**
+ * One labelled numeric input.
+ *
+ * Defined at module scope, not inside `FoodForm`. A component declared in a
+ * render body is a *new type* on every render, so React unmounts the old input
+ * and mounts a fresh one rather than updating it — which throws away focus and
+ * the caret on every keystroke. Same JSX, same props, entirely different
+ * behaviour, and nothing about the markup hints at it.
+ */
+function NumField({
+  id,
+  label,
+  value,
+  onChange,
+  required,
+}: {
+  id: string
+  label: string
+  value: number | null
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  required?: boolean
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type="number"
+        step="any"
+        min={0}
+        required={required}
+        value={value ?? ''}
+        onChange={onChange}
+      />
+    </div>
+  )
+}
+
+/**
+ * The form's own state. The numeric fields can be empty while you type, which
+ * `FoodInput` cannot express — and pre-filling them with 0 instead is not a
+ * neutral choice: typing 140 into a field showing 0 produces 0140.
+ */
+type FoodDraft = Omit<
+  FoodInput,
+  'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'serving_size_g'
+> & {
+  calories_kcal: number | null
+  protein_g: number | null
+  carbs_g: number | null
+  fat_g: number | null
+  serving_size_g: number | null
+}
+
+const EMPTY: FoodDraft = {
   name: '',
   brand: '',
   upc: '',
-  calories_kcal: 0,
-  protein_g: 0,
-  carbs_g: 0,
-  fat_g: 0,
+  calories_kcal: null,
+  protein_g: null,
+  carbs_g: null,
+  fat_g: null,
   fiber_g: null,
   sugar_g: null,
   saturated_fat_g: null,
   sodium_mg: null,
-  serving_size_g: 100,
+  serving_size_g: null,
   serving_label: '',
+  nutrient_basis: 'per_serving',
   variant_of: null,
   variant_label: null,
   edit_summary: '',
@@ -68,10 +159,14 @@ export default function FoodForm({
 }) {
   const queryClient = useQueryClient()
   const [showMore, setShowMore] = useState(false)
-  const [form, setForm] = useState<FoodInput>(() => {
+  // The form holds numbers in whichever basis is on screen. Storage is always
+  // per 100 g, so an existing food is rebased on the way in and the basis
+  // travels with the payload on the way out — the server does the arithmetic,
+  // once, for every client.
+  const [form, setForm] = useState<FoodDraft>(() => {
     const source = food ?? variantOf
     if (!source) return { ...EMPTY, name: initialName ?? '' }
-    return {
+    const stored: FoodDraft = {
       name: source.name,
       brand: source.brand ?? '',
       upc: food?.upc ?? '',
@@ -85,17 +180,29 @@ export default function FoodForm({
       sodium_mg: source.sodium_mg,
       serving_size_g: source.serving_size_g,
       serving_label: source.serving_label ?? '',
+      nutrient_basis: 'per_100g',
       variant_of: variantOf ? variantOf.id : (food?.variant_of ?? null),
       variant_label: variantOf ? '' : (food?.variant_label ?? null),
       edit_summary: '',
     }
+    return source.nutrient_basis === 'per_serving' ? rebase(stored, 'per_serving') : stored
   })
+
+  const perServing = form.nutrient_basis === 'per_serving'
 
   const save = useMutation({
     mutationFn: () => {
       const payload: FoodInput = {
         ...form,
         name: form.name.trim(),
+        calories_kcal: form.calories_kcal ?? 0,
+        protein_g: form.protein_g ?? 0,
+        carbs_g: form.carbs_g ?? 0,
+        fat_g: form.fat_g ?? 0,
+        // 100 g is the sensible default only when the figures are already per
+        // 100 g; per serving it is a silent wrong answer, so the field is
+        // required in that mode instead.
+        serving_size_g: form.serving_size_g ?? 100,
         brand: form.brand || null,
         upc: form.upc || null,
         serving_label: form.serving_label || null,
@@ -113,29 +220,15 @@ export default function FoodForm({
   const num = (key: keyof FoodInput) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value === '' ? null : Number(e.target.value) }))
 
-  const NumField = ({
-    id,
-    label,
-    field,
-    required,
-  }: {
-    id: string
-    label: string
-    field: keyof FoodInput
-    required?: boolean
-  }) => (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        type="number"
-        step="any"
-        min={0}
-        required={required}
-        value={(form[field] as number | null) ?? ''}
-        onChange={num(field)}
-      />
-    </div>
+  /** Binds one numeric field of this form to the shared `NumField` above. */
+  const field = (id: string, label: string, key: keyof FoodDraft, required?: boolean) => (
+    <NumField
+      id={id}
+      label={label}
+      required={required}
+      value={form[key] as number | null}
+      onChange={num(key)}
+    />
   )
 
   return (
@@ -183,27 +276,72 @@ export default function FoodForm({
         </div>
       )}
 
-      <p className="text-muted-foreground text-xs">Nutrients are per 100 g.</p>
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <NumField id="f-kcal" label="Calories" field="calories_kcal" required />
-        <NumField id="f-p" label="Protein (g)" field="protein_g" required />
-        <NumField id="f-c" label="Carbs (g)" field="carbs_g" required />
-        <NumField id="f-f" label="Fat (g)" field="fat_g" required />
+      {/* Two bases, because the numbers come from two kinds of place. A
+          packaged food is read off a label, which states one serving; a
+          reference figure from USDA is per 100 g. Making people convert by
+          hand does not fail loudly — it silently stores a food that is wrong
+          by the serving ratio, and in a database anyone can edit, the next
+          person "fixes" the converted value back. */}
+      <div className="space-y-1.5">
+        <Label>These numbers are</Label>
+        <ToggleGroup
+          type="single"
+          value={form.nutrient_basis ?? 'per_100g'}
+          onValueChange={(next) => {
+            if (next) setForm((f) => rebase(f, next as NutrientBasis))
+          }}
+          aria-label="What the figures below describe"
+          className="w-full"
+        >
+          <ToggleGroupItem value="per_serving" className="flex-1">
+            Per serving
+          </ToggleGroupItem>
+          <ToggleGroupItem value="per_100g" className="flex-1">
+            Per 100 g
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <p className="text-muted-foreground text-xs">
+          {perServing
+            ? 'As a nutrition label reads. Switching converts what you have typed, so you can check it either way.'
+            : 'As USDA and Open Food Facts publish. Switching converts what you have typed, so you can check it either way.'}
+        </p>
       </div>
 
+      {/* The serving size divides the figures below it when the basis is per
+          serving, so it is asked for first rather than buried underneath
+          them. */}
       <div className="grid grid-cols-2 gap-3">
-        <NumField id="f-serv" label="Serving size (g)" field="serving_size_g" required />
+        {field('f-serv', 'Serving size (g)', 'serving_size_g', perServing)}
         <div className="space-y-1.5">
           <Label htmlFor="f-servlabel">Serving label</Label>
           <Input
             id="f-servlabel"
-            placeholder="e.g. 1 cup"
+            placeholder="e.g. 1 cup, 12 crackers"
             value={form.serving_label ?? ''}
             onChange={(e) => setForm((f) => ({ ...f, serving_label: e.target.value }))}
           />
         </div>
       </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {field('f-kcal', 'Calories', 'calories_kcal', true)}
+        {field('f-p', 'Protein (g)', 'protein_g', true)}
+        {field('f-c', 'Carbs (g)', 'carbs_g', true)}
+        {field('f-f', 'Fat (g)', 'fat_g', true)}
+      </div>
+
+      {/* The check the person entering cannot easily do in their head, and the
+          one that catches a mistyped serving size: 900 kcal per 100 g is pure
+          fat, so anything near it is a wrong number rather than a rich food. */}
+      {perServing && !!form.serving_size_g && !!form.calories_kcal && (
+        <p className="text-muted-foreground text-xs">
+          Works out to{' '}
+          <strong>
+            {tidy((form.calories_kcal * 100) / form.serving_size_g).toFixed(0)} kcal
+          </strong>{' '}
+          per 100 g, which is what gets stored.
+        </p>
+      )}
 
       <Button
         type="button"
@@ -219,10 +357,10 @@ export default function FoodForm({
 
       {showMore && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <NumField id="f-fib" label="Fiber (g)" field="fiber_g" />
-          <NumField id="f-sug" label="Sugar (g)" field="sugar_g" />
-          <NumField id="f-sat" label="Sat. fat (g)" field="saturated_fat_g" />
-          <NumField id="f-na" label="Sodium (mg)" field="sodium_mg" />
+          {field('f-fib', 'Fiber (g)', 'fiber_g')}
+          {field('f-sug', 'Sugar (g)', 'sugar_g')}
+          {field('f-sat', 'Sat. fat (g)', 'saturated_fat_g')}
+          {field('f-na', 'Sodium (mg)', 'sodium_mg')}
           <div className="col-span-2 space-y-1.5 sm:col-span-4">
             <Label htmlFor="f-upc">UPC</Label>
             <Input
@@ -262,6 +400,9 @@ export default function FoodForm({
           disabled={
             save.isPending ||
             !form.name.trim() ||
+            // Per serving, the serving size is a divisor: leaving it blank
+            // would quietly store the label's figures as per-100 g values.
+            (perServing && !form.serving_size_g) ||
             // The server refuses a parent without a label too; catching it here
             // saves a round trip to be told something the form already knows.
             (!!form.variant_of && !form.variant_label?.trim())

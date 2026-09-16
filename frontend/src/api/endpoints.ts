@@ -18,6 +18,7 @@ import type {
   FoodVerification,
   Health,
   Nutrient,
+  NutrientBasis,
   NutritionTarget,
   Photo,
   Reminder,
@@ -68,6 +69,11 @@ export interface FoodInput {
   sodium_mg?: number | null
   serving_size_g: number
   serving_label?: string | null
+  /**
+   * What the figures above describe. The server converts to per 100 g for
+   * storage, so a client can post exactly what a label says.
+   */
+  nutrient_basis?: NutrientBasis
   /** Makes this food a preparation variant of another. */
   variant_of?: string | null
   /** Required with `variant_of`, rejected without it. */

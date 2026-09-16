@@ -17,7 +17,7 @@ use super::nutrients::Nutrients;
 pub const FOOD_COLUMNS: &str = r#"
     id, source, source_id, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
     fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g, serving_label,
-    variant_of, variant_label, revision, verified_at, disputed_at,
+    variant_of, variant_label, revision, verified_at, disputed_at, nutrient_basis,
     created_by, created_at, updated_at
 "#;
 
@@ -41,6 +41,10 @@ pub struct Food {
     pub sodium_mg: Option<f64>,
     pub serving_size_g: f64,
     pub serving_label: Option<String>,
+    /// `per_100g` or `per_serving`: the basis this food's numbers were entered
+    /// in and should be shown in. Storage is always per 100 g regardless — this
+    /// says how to present it, not how it is kept.
+    pub nutrient_basis: String,
     /// Set when this food is a preparation variant of another food, e.g. the
     /// cooked form of a raw ingredient.
     pub variant_of: Option<Uuid>,
@@ -103,6 +107,45 @@ fn default_serving() -> f64 {
     100.0
 }
 
+/// Which quantity a set of nutrient figures describes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NutrientBasis {
+    /// 100 g of the food. How USDA and Open Food Facts publish, and how
+    /// everything is stored.
+    ///
+    /// Renamed explicitly: `snake_case` derives `per100g` from `Per100g`,
+    /// which would not match the string this enum writes to the database or
+    /// the value the column's CHECK constraint allows.
+    #[serde(rename = "per_100g")]
+    #[default]
+    Per100g,
+    /// One serving of `serving_size_g`. How a nutrition label reads.
+    PerServing,
+}
+
+impl NutrientBasis {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Per100g => "per_100g",
+            Self::PerServing => "per_serving",
+        }
+    }
+}
+
+/// Nutrients converted to the per-100 g basis everything is stored in.
+#[derive(Debug, Clone, Copy)]
+pub struct Per100g {
+    pub calories_kcal: f64,
+    pub protein_g: f64,
+    pub carbs_g: f64,
+    pub fat_g: f64,
+    pub fiber_g: Option<f64>,
+    pub sugar_g: Option<f64>,
+    pub saturated_fat_g: Option<f64>,
+    pub sodium_mg: Option<f64>,
+}
+
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct UpsertFoodRequest {
     #[validate(length(min = 1, max = 200, message = "must be 1-200 characters"))]
@@ -111,25 +154,17 @@ pub struct UpsertFoodRequest {
     pub brand: Option<String>,
     #[validate(length(min = 6, max = 20, message = "must be 6-20 digits"))]
     pub upc: Option<String>,
-    #[validate(range(min = 0.0, max = 10000.0, message = "is out of range"))]
+    // These are checked after conversion rather than here: when the figures are
+    // per serving, the bound that matters is what they work out to per 100 g,
+    // and a limit applied to the typed value would reject a perfectly ordinary
+    // label (300 kcal in a 90 g serving) while letting a mistyped one through.
+    #[validate(range(min = 0.0, message = "cannot be negative"))]
     pub calories_kcal: f64,
-    #[validate(range(
-        min = 0.0,
-        max = 100.0,
-        message = "is out of range for a per-100g value"
-    ))]
+    #[validate(range(min = 0.0, message = "cannot be negative"))]
     pub protein_g: f64,
-    #[validate(range(
-        min = 0.0,
-        max = 100.0,
-        message = "is out of range for a per-100g value"
-    ))]
+    #[validate(range(min = 0.0, message = "cannot be negative"))]
     pub carbs_g: f64,
-    #[validate(range(
-        min = 0.0,
-        max = 100.0,
-        message = "is out of range for a per-100g value"
-    ))]
+    #[validate(range(min = 0.0, message = "cannot be negative"))]
     pub fat_g: f64,
     pub fiber_g: Option<f64>,
     pub sugar_g: Option<f64>,
@@ -145,13 +180,110 @@ pub struct UpsertFoodRequest {
     /// Required with `variant_of`, rejected without it.
     #[validate(length(min = 1, max = 60, message = "must be 1-60 characters"))]
     pub variant_label: Option<String>,
+    /// What the figures above describe. Defaults to `per_100g`, so a client
+    /// that predates this field keeps its existing meaning.
+    #[serde(default)]
+    pub nutrient_basis: NutrientBasis,
     /// Free-text note stored on the revision this write creates — the edit
     /// summary line of a wiki, not a field on the food itself.
     #[validate(length(max = 300, message = "must be at most 300 characters"))]
     pub edit_summary: Option<String>,
 }
 
+/// Per-100 g ceilings. A gram figure cannot exceed the 100 g it describes, and
+/// nothing edible reaches 900 kcal per 100 g (pure fat is ~884).
+const MAX_PER_100G: [(&str, f64); 7] = [
+    ("calories_kcal", 900.0),
+    ("protein_g", 100.0),
+    ("carbs_g", 100.0),
+    ("fat_g", 100.0),
+    ("fiber_g", 100.0),
+    ("sugar_g", 100.0),
+    ("saturated_fat_g", 100.0),
+];
+
+/// Sodium is milligrams, so it needs its own bound. Table salt is about
+/// 38,750 mg per 100 g and is the saltiest thing anyone logs.
+const MAX_SODIUM_MG: f64 = 50_000.0;
+
 impl UpsertFoodRequest {
+    /// Convert the submitted figures to the per-100 g basis used for storage,
+    /// and range-check the result.
+    ///
+    /// The conversion lives on the server rather than in the browser so that
+    /// every client — the UI, a script posting straight off a label, a future
+    /// importer — gets the same arithmetic and the same rounding, and so the
+    /// bounds are enforced against the number actually stored.
+    pub fn per_100g(&self) -> Result<Per100g, String> {
+        let factor = match self.nutrient_basis {
+            NutrientBasis::Per100g => 1.0,
+            // Guarded by the `serving_size_g` range validator, which runs first
+            // and rejects anything at or below 0.1 g.
+            NutrientBasis::PerServing => 100.0 / self.serving_size_g,
+        };
+
+        // Rounded so the conversion round-trips: a value shown per serving,
+        // re-submitted unchanged and converted back lands on the same stored
+        // double, instead of drifting in the last bits and manufacturing a
+        // revision that says nothing changed.
+        let scale = |v: f64| (v * factor * 1e6).round() / 1e6;
+
+        let out = Per100g {
+            calories_kcal: scale(self.calories_kcal),
+            protein_g: scale(self.protein_g),
+            carbs_g: scale(self.carbs_g),
+            fat_g: scale(self.fat_g),
+            fiber_g: self.fiber_g.map(scale),
+            sugar_g: self.sugar_g.map(scale),
+            saturated_fat_g: self.saturated_fat_g.map(scale),
+            sodium_mg: self.sodium_mg.map(scale),
+        };
+
+        let values = [
+            out.calories_kcal,
+            out.protein_g,
+            out.carbs_g,
+            out.fat_g,
+            out.fiber_g.unwrap_or(0.0),
+            out.sugar_g.unwrap_or(0.0),
+            out.saturated_fat_g.unwrap_or(0.0),
+        ];
+
+        // `contains` rejects NaN for free: it is in no range, so a payload of
+        // `NaN` fails here rather than reaching the database.
+        for ((field, max), value) in MAX_PER_100G.iter().zip(values) {
+            if !(0.0..=*max).contains(&value) {
+                return Err(self.out_of_range(field, value, *max));
+            }
+        }
+        if let Some(sodium) = out.sodium_mg {
+            if !(0.0..=MAX_SODIUM_MG).contains(&sodium) {
+                return Err(self.out_of_range("sodium_mg", sodium, MAX_SODIUM_MG));
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Say what the number worked out to, not just that it was rejected.
+    ///
+    /// When the figures came off a label, an over-range value almost always
+    /// means the serving size is wrong, and the converted figure is the clue
+    /// that points at it.
+    fn out_of_range(&self, field: &str, value: f64, max: f64) -> String {
+        let rounded = (value * 10.0).round() / 10.0;
+        match self.nutrient_basis {
+            NutrientBasis::PerServing => format!(
+                "{field} works out to {rounded} per 100 g, over the limit of {max} — \
+                 check the serving size of {} g",
+                self.serving_size_g
+            ),
+            NutrientBasis::Per100g => {
+                format!("{field} is {rounded} per 100 g, over the limit of {max}")
+            }
+        }
+    }
+
     /// `variant_of` and `variant_label` are meaningless apart: the database
     /// enforces the pairing too, but catching it here yields a field-level
     /// validation error instead of a constraint name.
@@ -400,6 +532,9 @@ pub struct FoodExport {
     pub sodium_mg: Option<f64>,
     pub serving_size_g: f64,
     pub serving_label: Option<String>,
+    /// Which basis these figures read best in. The values themselves are per
+    /// 100 g in the file, as they are in storage.
+    pub nutrient_basis: String,
     /// The parent's export key, when this row is a variant. Resolved by name
     /// on import, since ids do not travel.
     pub variant_of_key: Option<String>,

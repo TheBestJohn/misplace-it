@@ -18,6 +18,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Anyone can correct any entry — see **Foods are a shared record** below |
 | **Food history & verification** | Every edit is kept, attributed and reversible. Entries stay unverified until other people confirm the numbers, and an edit resets that |
 | **Food variants** | Cooked, raw, drained — separate entries pointing at a parent, because they are the same ingredient and different numbers |
+| **Enter what the label says** | A manually added food is typed per serving, the way the packet prints it, and converted server-side. Imports stay per 100 g, because that is how USDA and Open Food Facts publish |
 | **Add a food anywhere** | Create one from the Foods page, or inline while logging a meal or building a recipe — a search that found nothing offers to create what you typed |
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
 | **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it. Unlike foods, a recipe is yours |
@@ -220,11 +221,24 @@ check. A read-only key is refused any unsafe method at the extractor rather than
 in each handler, and no key can manage credentials or administer the instance,
 so a leaked key cannot mint its own replacements.
 
-**Nutrients are stored per 100 g.** Both upstream sources publish that basis,
-so importing is lossless, and every derived figure — a serving, a recipe row, a
-diary entry, a day — is one multiplication by `grams / 100`. Storing per-serving
-values instead would mean a conversion on every import and a second one on every
-read.
+**Nutrients are stored per 100 g, but entered the way they are printed.**
+Storage stays per 100 g: both upstream sources publish that basis, so importing
+is lossless, and every derived figure — a serving, a recipe row, a diary entry,
+a day — is one multiplication by `grams / 100`. Storing per-serving values
+instead would mean a conversion on every import and another on every read. It is
+not how the numbers arrive, though. USDA and Open Food Facts publish per 100 g, so an import needs
+no thought; a person adding a food is reading a label, and a label states one
+serving. Asking them to divide by 0.28 in their head does not fail loudly when
+they get it wrong — it stores a food that is 3.5x too rich, and in a database
+anyone can edit, the next person sees 500 kcal and "fixes" it back.
+
+So a food carries the basis it was entered in, the form offers both and converts
+between them live, and the conversion happens on the server: one implementation,
+one rounding, for the UI and for a script posting straight off a packet. The
+range checks apply to the converted figure, because that is the number being
+stored — which also means a mistyped serving size is caught by what it works out
+to ("works out to 7000 kcal per 100 g — check the serving size of 2 g") rather
+than sailing through.
 
 **Diary entries are a strict XOR.** An entry is either *a food, in grams* or *a
 recipe, in servings*, enforced by a database `CHECK` as well as by the handler,

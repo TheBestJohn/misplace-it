@@ -347,6 +347,59 @@ status "reject a zero cadence"     400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'c
 status "reject an unknown kind"    400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"floss","every_days":1}]}'
 status "reject a duplicate kind"   400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"weigh_in","every_days":7},{"kind":"weigh_in","every_days":3}]}'
 
+echo "== nutrient basis"
+# A nutrition label states one serving, not 100 g. Posting what the label says
+# and letting the server divide is the difference between a correct food and one
+# that is wrong by the serving ratio -- silently, with no error to notice.
+# Cheez-It: 28 g serving, 140 kcal, 2 g protein, 18 g carbs, 7 g fat.
+LABEL=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' -d '{
+  "name":"Label crackers","serving_size_g":28,"serving_label":"27 crackers",
+  "nutrient_basis":"per_serving",
+  "calories_kcal":140,"protein_g":2,"carbs_g":18,"fat_g":7,"sodium_mg":230}')
+LABEL_ID=$(echo "$LABEL" | j "['id']")
+# 140 / 0.28 = 500
+expect "per-serving input is converted to per 100 g" "$(echo "$LABEL" | j "['calories_kcal']")" "500.0"
+expect "and the macros with it"                    "$(echo "$LABEL" | j "['carbs_g']")"        "64.285714"
+expect "the basis is remembered"                   "$(echo "$LABEL" | j "['nutrient_basis']")" "per_serving"
+# ...and what comes back per serving is what was typed in.
+expect "per-serving reads back as entered"         "$(echo "$LABEL" | j "['per_serving']['calories_kcal']")" "140.0"
+expect "with no drift on the macros"               "$(echo "$LABEL" | j "['per_serving']['carbs_g']")"       "18.0"
+
+# Re-submitting untouched values must not manufacture a revision.
+expect "an unchanged re-save is not an edit" \
+  "$(curl -fsS -X PUT "$BASE/foods/$LABEL_ID" -H "$AUTH" -H 'content-type: application/json' -d '{
+      "name":"Label crackers","serving_size_g":28,"serving_label":"27 crackers",
+      "nutrient_basis":"per_serving",
+      "calories_kcal":140,"protein_g":2,"carbs_g":18,"fat_g":7,"sodium_mg":230}' | j "['revision']")" \
+  "1"
+
+# Sent explicitly, not left to the default: the two paths serialise through
+# different code, and only this one would have caught the enum's wire name
+# disagreeing with the value stored in the column.
+expect "per_100g is accepted as written" \
+  "$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"name":"Basis explicit","nutrient_basis":"per_100g","calories_kcal":50,"protein_g":1,"carbs_g":2,"fat_g":3}' | j "['calories_kcal']")" \
+  "50.0"
+status "and an unknown basis is refused" 400 -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Basis bogus","nutrient_basis":"per100g","calories_kcal":50,"protein_g":1,"carbs_g":2,"fat_g":3}'
+
+expect "the default basis is still per 100 g" \
+  "$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"name":"Basis default","calories_kcal":50,"protein_g":1,"carbs_g":2,"fat_g":3}' | j "['nutrient_basis']")" \
+  "per_100g"
+
+# The bound that matters is the converted figure, so an ordinary label passes...
+status "a rich but real label is accepted" 201 -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Peanut butter scoop","serving_size_g":32,"nutrient_basis":"per_serving","calories_kcal":190,"protein_g":7,"carbs_g":7,"fat_g":16}'
+# ...and a mistyped serving size is caught by what it works out to.
+status "an impossible per-100g result is refused" 400 -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Bad serving","serving_size_g":2,"nutrient_basis":"per_serving","calories_kcal":140,"protein_g":2,"carbs_g":18,"fat_g":7}'
+expect "and the error names the likely cause" \
+  "$(curl -s -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"name":"Bad serving","serving_size_g":2,"nutrient_basis":"per_serving","calories_kcal":140,"protein_g":2,"carbs_g":18,"fat_g":7}' \
+      | j " and 'check the serving size' in d['message']")" \
+  "True"
+
 echo "== food provenance"
 # Foods are a shared record rather than personal notes, so the interesting
 # assertions are about the paper trail: who changed what, whether anyone else
