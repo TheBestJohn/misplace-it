@@ -19,6 +19,8 @@ export interface Profile {
   activity_level: string
   goal: string
   target_weight_kg: number | null
+  /** Whether to show the admin area. The server re-checks on every call. */
+  is_admin: boolean
   created_at: string
 }
 
@@ -106,13 +108,123 @@ export interface Food {
   sodium_mg: number | null
   serving_size_g: number
   serving_label: string | null
+  /** Set when this row is a preparation variant of another food. */
+  variant_of: string | null
+  /** `cooked`, `raw`, `drained` — present exactly when `variant_of` is. */
+  variant_label: string | null
+  /** Bumped by the server on every substantive edit. */
+  revision: number
+  verified_at: string | null
   created_by: string | null
   created_at: string
   updated_at: string
 }
 
-/** `GET /foods/{id}` flattens the food and adds a computed per-serving block. */
-export type FoodDetail = Food & { per_serving: Nutrients }
+/** How much the community trusts a food's *current* revision. */
+export type VerificationStatus = 'unverified' | 'verified' | 'disputed'
+
+export type Verdict = 'confirm' | 'dispute'
+
+export interface FoodProvenance {
+  revision: number
+  status: VerificationStatus
+  confirmations: number
+  disputes: number
+  /** Net confirmations needed for `verified`, so "1 of 2" needs no guessing. */
+  quorum: number
+  verified_at: string | null
+  contributors: number
+  last_change_kind: string
+  last_edited_at: string
+  last_edited_by: string | null
+  last_edited_by_name: string | null
+  last_edit_summary: string | null
+  your_verdict: Verdict | null
+  /** False when you wrote the current revision. */
+  can_verify: boolean
+}
+
+export interface FoodRevision {
+  id: string
+  food_id: string
+  revision: number
+  change_kind: 'create' | 'edit' | 'import' | 'revert' | 'seed' | string
+  edited_by: string | null
+  edited_by_name: string | null
+  summary: string | null
+  snapshot: Record<string, unknown>
+  created_at: string
+  /** Fields whose value differs from the revision before this one. */
+  changed_fields: string[]
+}
+
+export interface FoodVerification {
+  user_id: string
+  display_name: string
+  revision: number
+  verdict: Verdict
+  note: string | null
+  /** False for a vote on an older revision: kept, but no longer counted. */
+  current: boolean
+}
+
+/**
+ * `GET /foods/{id}` flattens the food and adds the computed per-serving block,
+ * its editorial state, and whichever side of the variant relationship applies.
+ */
+export type FoodDetail = Food & {
+  per_serving: Nutrients
+  provenance: FoodProvenance
+  variants: Food[]
+  parent: Food | null
+}
+
+export interface ApiKey {
+  id: string
+  name: string
+  prefix: string
+  scopes: ('read' | 'write')[]
+  last_used_at: string | null
+  expires_at: string | null
+  revoked_at: string | null
+  created_at: string
+}
+
+/** The only shape that ever carries the token, returned once at creation. */
+export type CreatedApiKey = ApiKey & { token: string }
+
+export interface AdminUserRow {
+  id: string
+  email: string
+  display_name: string
+  is_admin: boolean
+  disabled_at: string | null
+  created_at: string
+  diary_entries: number
+  weigh_ins: number
+  foods_created: number
+  food_edits: number
+  active_api_keys: number
+  last_activity_at: string | null
+}
+
+export interface AdminStats {
+  users: number
+  admins: number
+  disabled_users: number
+  foods: number
+  food_variants: number
+  foods_verified: number
+  foods_disputed: number
+  food_revisions: number
+  recipes: number
+  public_recipes: number
+  diary_entries: number
+  weigh_ins: number
+  photos: number
+  active_api_keys: number
+  food_quorum: number
+}
 
 export interface ExternalFood {
   source: string

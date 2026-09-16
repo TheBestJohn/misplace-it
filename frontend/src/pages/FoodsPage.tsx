@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, X } from 'lucide-react'
+import { Download, Plus, X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
 import type { ExternalFood, Food } from '@/api/types'
@@ -21,8 +21,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Empty, ErrorNote, SourceBadge, Spinner } from '@/components/shared'
+import { Empty, ErrorNote, SourceBadge, Spinner, VerificationBadge } from '@/components/shared'
 import FoodForm from '@/components/FoodForm'
+import FoodDetailDialog from '@/components/FoodDetailDialog'
 
 export default function FoodsPage() {
   const { user } = useAuth()
@@ -31,6 +32,7 @@ export default function FoodsPage() {
   const [debounced, setDebounced] = useState('')
   const [mineOnly, setMineOnly] = useState(false)
   const [editing, setEditing] = useState<Food | 'new' | null>(null)
+  const [openFood, setOpenFood] = useState<string | null>(null)
   const [barcode, setBarcode] = useState('')
   const [submittedBarcode, setSubmittedBarcode] = useState('')
   const [externalTerm, setExternalTerm] = useState('')
@@ -72,9 +74,19 @@ export default function FoodsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Foods</h1>
-        <Button size="sm" onClick={() => setEditing('new')}>
-          <Plus /> Custom food
-        </Button>
+        <div className="flex gap-2">
+          {/* A plain link, not a fetch: the point of the export is to become a
+              file you can commit and review, so the browser's own download is
+              exactly the right behaviour. */}
+          <Button asChild size="sm" variant="outline">
+            <a href={api.exportFoodsUrl(false)} download="nom-inal-foods.json">
+              <Download /> Export
+            </a>
+          </Button>
+          <Button size="sm" onClick={() => setEditing('new')}>
+            <Plus /> Custom food
+          </Button>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -181,7 +193,8 @@ export default function FoodsPage() {
         <CardHeader>
           <CardTitle>Food database</CardTitle>
           <CardDescription>
-            Shared by everyone — a food is a fact about a product. Only its author can edit it.
+            Shared by everyone — a food is a fact about a product, so anyone can correct one. Every
+            change is signed, reversible, and unverified until other people agree with it.
           </CardDescription>
           <CardAction>
             <Label className="text-muted-foreground text-sm font-normal">
@@ -218,9 +231,23 @@ export default function FoodsPage() {
                 {foods.data.map((food) => (
                   <TableRow key={food.id}>
                     <TableCell className="max-w-[16rem] whitespace-normal">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{food.name}</span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className="hover:text-primary font-medium underline-offset-4 hover:underline"
+                          onClick={() => setOpenFood(food.id)}
+                        >
+                          {food.name}
+                        </button>
+                        {food.variant_label && (
+                          <Badge variant="secondary" className="text-[10px]">
+                            {food.variant_label}
+                          </Badge>
+                        )}
                         <SourceBadge source={food.source} />
+                        <VerificationBadge
+                          status={food.verified_at ? 'verified' : 'unverified'}
+                        />
                         {food.created_by === user?.id && (
                           <Badge variant="secondary" className="text-[10px]">
                             Yours
@@ -240,11 +267,17 @@ export default function FoodsPage() {
                       {food.serving_label ? ` · ${food.serving_label}` : ''}
                     </TableCell>
                     <TableCell className="text-right">
-                      {food.created_by === user?.id && (
-                        <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="sm" onClick={() => setEditing(food)}>
-                            Edit
-                          </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => setOpenFood(food.id)}>
+                          Details
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setEditing(food)}>
+                          Edit
+                        </Button>
+                        {/* Deleting is still narrow: the server refuses once
+                            anyone else has edited or vouched for the entry, so
+                            the button is only offered to the author. */}
+                        {food.created_by === user?.id && food.revision === 1 && (
                           <Button
                             variant="ghost"
                             size="icon-sm"
@@ -253,8 +286,8 @@ export default function FoodsPage() {
                           >
                             <X />
                           </Button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -268,20 +301,29 @@ export default function FoodsPage() {
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editing === 'new' ? 'New custom food' : 'Edit food'}</DialogTitle>
+            <DialogTitle>{editing === 'new' ? 'New custom food' : 'Correct this food'}</DialogTitle>
             <DialogDescription>
-              Visible to everyone once saved. Only you can edit it.
+              {editing === 'new'
+                ? 'Visible to everyone once saved, and editable by anyone — under your name.'
+                : 'Your change is recorded against your name and puts the entry back to unverified.'}
             </DialogDescription>
           </DialogHeader>
           {editing && (
             <FoodForm
               food={editing === 'new' ? null : editing}
+              askForSummary={editing !== 'new'}
               onSaved={() => setEditing(null)}
               onCancel={() => setEditing(null)}
             />
           )}
         </DialogContent>
       </Dialog>
+
+      <FoodDetailDialog
+        foodId={openFood}
+        open={openFood !== null}
+        onOpenChange={(open) => !open && setOpenFood(null)}
+      />
     </div>
   )
 }

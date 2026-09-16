@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { Loader2, TriangleAlert } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import type { Nutrients, TargetProgress } from '@/api/types'
+import type { Nutrients, TargetProgress, VerificationStatus } from '@/api/types'
 import { kcal, round } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -154,6 +154,49 @@ export function SourceBadge({ source }: { source: string }) {
   return (
     <Badge variant="outline" className="text-[10px] tracking-wide uppercase">
       {label}
+    </Badge>
+  )
+}
+
+/**
+ * How much the community trusts a food's current numbers.
+ *
+ * Three states rather than a checkmark, because "nobody has looked" and
+ * "somebody looked and says this is wrong" are opposite situations that a
+ * single boolean would flatten into "not verified".
+ */
+export function VerificationBadge({
+  status,
+  confirmations,
+  quorum,
+  className,
+}: {
+  status: VerificationStatus
+  confirmations?: number
+  quorum?: number
+  className?: string
+}) {
+  if (status === 'verified') {
+    return (
+      <Badge variant="success" className={cn('text-[10px]', className)}>
+        Verified
+      </Badge>
+    )
+  }
+  if (status === 'disputed') {
+    return (
+      <Badge variant="destructive" className={cn('text-[10px]', className)}>
+        Disputed
+      </Badge>
+    )
+  }
+  // The counts turn a bare "Unverified" into something actionable: it says how
+  // close the entry is and, implicitly, that one more person could finish it.
+  const progress =
+    confirmations !== undefined && quorum !== undefined ? ` ${confirmations}/${quorum}` : ''
+  return (
+    <Badge variant="outline" className={cn('text-muted-foreground text-[10px]', className)}>
+      Unverified{progress}
     </Badge>
   )
 }

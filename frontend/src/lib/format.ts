@@ -67,3 +67,54 @@ export const sourceLabel = (source: string) =>
 export const LB_PER_KG = 2.2046226218
 export const kgToLb = (v: number) => v * LB_PER_KG
 export const lbToKg = (v: number) => v / LB_PER_KG
+
+/**
+ * "3 weeks ago", from a timestamp.
+ *
+ * Revision histories are read as a sequence of events, and an absolute
+ * timestamp makes the reader do the subtraction themselves. `Intl` handles the
+ * pluralisation and the locale, so this only has to pick a unit.
+ */
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 24 * 3600],
+  ['month', 30 * 24 * 3600],
+  ['week', 7 * 24 * 3600],
+  ['day', 24 * 3600],
+  ['hour', 3600],
+  ['minute', 60],
+]
+
+export function relativeTime(iso: string): string {
+  const seconds = (Date.parse(iso) - Date.now()) / 1000
+  const magnitude = Math.abs(seconds)
+  if (magnitude < 45) return 'just now'
+
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
+  for (const [unit, size] of RELATIVE_UNITS) {
+    if (magnitude >= size) return formatter.format(Math.round(seconds / size), unit)
+  }
+  return formatter.format(Math.round(seconds), 'second')
+}
+
+/** Column name to the label the food form uses, for revision diffs. */
+const FIELD_LABELS: Record<string, string> = {
+  name: 'Name',
+  brand: 'Brand',
+  upc: 'UPC',
+  calories_kcal: 'Calories',
+  protein_g: 'Protein',
+  carbs_g: 'Carbs',
+  fat_g: 'Fat',
+  fiber_g: 'Fiber',
+  sugar_g: 'Sugar',
+  saturated_fat_g: 'Sat. fat',
+  sodium_mg: 'Sodium',
+  serving_size_g: 'Serving size',
+  serving_label: 'Serving label',
+  variant_of: 'Parent food',
+  variant_label: 'Variant',
+  source: 'Source',
+  source_id: 'Source id',
+}
+
+export const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field

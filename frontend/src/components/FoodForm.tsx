@@ -24,51 +24,72 @@ const EMPTY: FoodInput = {
   sodium_mg: null,
   serving_size_g: 100,
   serving_label: '',
+  variant_of: null,
+  variant_label: null,
+  edit_summary: '',
 }
 
 /**
- * Create or edit a custom food.
+ * Create or edit a food.
  *
- * Shared between the Foods page and the food picker, so a food can be created
- * without leaving whatever you were in the middle of. The optional nutrients
- * start collapsed: thirteen fields is a lot to face when you are halfway
- * through logging lunch, and only six of them are required.
+ * Shared between the Foods page, the food picker and the detail dialog, so a
+ * food can be created or corrected without leaving whatever you were in the
+ * middle of. The optional nutrients start collapsed: thirteen fields is a lot
+ * to face when you are halfway through logging lunch, and only six of them are
+ * required.
  */
 export default function FoodForm({
   food,
+  variantOf,
   initialName,
+  askForSummary,
   onSaved,
   onCancel,
   submitLabel,
 }: {
   food?: Food | null
+  /**
+   * Start a new preparation variant of this food. The nutrients are seeded
+   * from the parent because a variant is usually a nudge from it, not a blank
+   * form -- cooked chicken is not a different food you have to look up again.
+   */
+  variantOf?: Food | null
   /** Seeds the name, so a search that found nothing carries straight over. */
   initialName?: string
+  /**
+   * Ask what changed. Shown when editing something that already exists, where
+   * the note is the difference between a history you can read and a list of
+   * timestamps.
+   */
+  askForSummary?: boolean
   onSaved: (food: FoodDetail) => void
   onCancel: () => void
   submitLabel?: string
 }) {
   const queryClient = useQueryClient()
   const [showMore, setShowMore] = useState(false)
-  const [form, setForm] = useState<FoodInput>(
-    food
-      ? {
-          name: food.name,
-          brand: food.brand ?? '',
-          upc: food.upc ?? '',
-          calories_kcal: food.calories_kcal,
-          protein_g: food.protein_g,
-          carbs_g: food.carbs_g,
-          fat_g: food.fat_g,
-          fiber_g: food.fiber_g,
-          sugar_g: food.sugar_g,
-          saturated_fat_g: food.saturated_fat_g,
-          sodium_mg: food.sodium_mg,
-          serving_size_g: food.serving_size_g,
-          serving_label: food.serving_label ?? '',
-        }
-      : { ...EMPTY, name: initialName ?? '' },
-  )
+  const [form, setForm] = useState<FoodInput>(() => {
+    const source = food ?? variantOf
+    if (!source) return { ...EMPTY, name: initialName ?? '' }
+    return {
+      name: source.name,
+      brand: source.brand ?? '',
+      upc: food?.upc ?? '',
+      calories_kcal: source.calories_kcal,
+      protein_g: source.protein_g,
+      carbs_g: source.carbs_g,
+      fat_g: source.fat_g,
+      fiber_g: source.fiber_g,
+      sugar_g: source.sugar_g,
+      saturated_fat_g: source.saturated_fat_g,
+      sodium_mg: source.sodium_mg,
+      serving_size_g: source.serving_size_g,
+      serving_label: source.serving_label ?? '',
+      variant_of: variantOf ? variantOf.id : (food?.variant_of ?? null),
+      variant_label: variantOf ? '' : (food?.variant_label ?? null),
+      edit_summary: '',
+    }
+  })
 
   const save = useMutation({
     mutationFn: () => {
@@ -78,6 +99,8 @@ export default function FoodForm({
         brand: form.brand || null,
         upc: form.upc || null,
         serving_label: form.serving_label || null,
+        variant_label: form.variant_label ? form.variant_label.trim() : null,
+        edit_summary: form.edit_summary || null,
       }
       return food ? api.updateFood(food.id, payload) : api.createFood(payload)
     },
@@ -143,6 +166,23 @@ export default function FoodForm({
         />
       </div>
 
+      {form.variant_of && (
+        <div className="space-y-1.5">
+          <Label htmlFor="f-variant">Variant</Label>
+          <Input
+            id="f-variant"
+            required
+            placeholder="cooked, raw, drained…"
+            value={form.variant_label ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, variant_label: e.target.value }))}
+          />
+          <p className="text-muted-foreground text-xs">
+            What makes this different from the food it came from. The numbers below started as a
+            copy of the parent&rsquo;s — change the ones the preparation changes.
+          </p>
+        </div>
+      )}
+
       <p className="text-muted-foreground text-xs">Nutrients are per 100 g.</p>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -195,13 +235,38 @@ export default function FoodForm({
         </div>
       )}
 
+      {askForSummary && (
+        <div className="space-y-1.5">
+          <Label htmlFor="f-summary">What changed?</Label>
+          <Input
+            id="f-summary"
+            placeholder="e.g. fat is 3.2 g on the current packaging"
+            value={form.edit_summary ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, edit_summary: e.target.value }))}
+          />
+          <p className="text-muted-foreground text-xs">
+            Kept on the revision, not on the food. It is what the next person reads before deciding
+            whether to trust your numbers.
+          </p>
+        </div>
+      )}
+
       <ErrorNote error={save.error} />
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" disabled={save.isPending || !form.name.trim()}>
+        <Button
+          type="submit"
+          disabled={
+            save.isPending ||
+            !form.name.trim() ||
+            // The server refuses a parent without a label too; catching it here
+            // saves a round trip to be told something the form already knows.
+            (!!form.variant_of && !form.variant_label?.trim())
+          }
+        >
           {save.isPending ? 'Saving…' : (submitLabel ?? 'Save')}
         </Button>
       </div>

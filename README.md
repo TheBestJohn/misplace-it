@@ -15,16 +15,21 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Weight tracking** | One weigh-in per day with optional body-fat %, trend chart, 7-entry moving average, kg/lb toggle, target line |
 | **Calorie & macro diary** | Log foods by weight or recipes by serving, grouped into breakfast/lunch/dinner/snack, with progress against your daily targets |
 | **Recipes** | Build from any food in your library; totals and per-serving macros are computed for you and recalculate live as you edit |
-| **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Only a food's author can edit it |
+| **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Anyone can correct any entry — see **Foods are a shared record** below |
+| **Food history & verification** | Every edit is kept, attributed and reversible. Entries stay unverified until other people confirm the numbers, and an edit resets that |
+| **Food variants** | Cooked, raw, drained — separate entries pointing at a parent, because they are the same ingredient and different numbers |
 | **Add a food anywhere** | Create one from the Foods page, or inline while logging a meal or building a recipe — a search that found nothing offers to create what you typed |
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
-| **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it |
+| **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it. Unlike foods, a recipe is yours |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
 | **Progress photos** | Attach photos to a weigh-in. Downscaled and re-encoded on upload, which strips EXIF — phone photos carry GPS |
 | **Reminders** | "It's been three weeks since your last weigh-in", at a cadence you set |
 | **Dark mode** | Follows your OS by default, with a toggle that overrides it. Applied before first paint, so there is no flash of the wrong theme |
 | **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
+| **Administration** | The first account owns the instance: promote, suspend and survey accounts, and remove a food outright |
+| **API keys** | Per-user, scoped read or read-write, revocable, for scripts and dashboards |
+| **Export** | `GET /foods/export` dumps the whole food database keyed by natural identity, ready to commit to a repository |
 | **OpenAPI 3.1** | Generated from the handlers, served at `/api/v1/openapi.json` |
 
 ### Where the food data comes from
@@ -144,6 +149,7 @@ Set in `.env` (see `.env.example`).
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
 | `MAX_UPLOAD_MB` | `15` | Largest accepted photo, before downscaling. |
+| `FOOD_QUORUM` | `2` | Net confirmations a food revision needs to count as verified. Set to `1` on a single-user instance — a second opinion that can never arrive means nothing is ever verified. |
 | `TRGM_WORD_THRESHOLD` | `0.4` | Fuzzy-search strictness, 0–1. Lower matches more typos and more noise. |
 | `RUST_LOG` | `nom_inal=info,…` | `tracing-subscriber` filter. |
 
@@ -153,6 +159,48 @@ Docker, where the SPA is served from a different origin than the API.
 ---
 
 ## Design notes
+
+**Foods are a shared record, not personal notes.** A food is a claim about the
+world, so anyone signed in can correct any entry, including one imported from a
+provider — the person holding the packet is usually not whoever typed it in
+first. Three things make that safe rather than reckless:
+
+- *Everything is kept.* A database trigger writes a JSONB snapshot of the row on
+  insert and on any substantive update. The trigger owns the write, so no code
+  path can skip it; the worst a caller can do by forgetting to set the
+  transaction-local actor is leave one revision unattributed. The snapshot is
+  JSONB rather than a typed mirror table because the nutrient list is the part
+  of this schema most likely to keep growing, and a mirror would need two
+  migrations per column.
+- *Agreement is per revision.* Verifications are keyed on
+  `(food, revision, user)`, so an edit produces a revision with no votes rather
+  than inheriting confidence that was given to the numbers it replaced. Nothing
+  has to be reset — the old votes simply stop being selected, and stay visible
+  as superseded. You cannot vouch for your own edit, disputes are subtracted
+  from confirmations, and `FOOD_QUORUM` sets how many net confirmations an entry
+  needs.
+- *Undoing is additive.* A revert restores an old snapshot as a **new** revision,
+  so the edit being undone stays on the record. Deletion closes once anyone else
+  has edited or verified an entry; past that the answer is an edit or a revert,
+  and an administrator is the escape hatch for an entry that should not exist.
+
+A re-import from USDA or Open Food Facts refreshes only rows still at revision 1
+— untouched copies of what the provider sent. Past that, somebody has
+deliberately disagreed with upstream, and a refresh must not quietly undo them.
+
+**The first account administers the instance.** A self-hosted deployment has no
+outside authority to appoint an owner, so installing it is the authority.
+Administrators cannot demote or suspend themselves, and the change is rolled
+back if it would leave no active administrator at all.
+
+**API keys are digested, not password-hashed.** Argon2 exists to make guessing a
+low-entropy human-chosen secret expensive. These tokens are 256 bits from the OS
+random source, so there is nothing to guess, and a slow hash would instead add
+its cost to every authenticated request — and force a scan of every key row to
+find which one a token belongs to. SHA-256 keeps the lookup an indexed equality
+check. A read-only key is refused any unsafe method at the extractor rather than
+in each handler, and no key can manage credentials or administer the instance,
+so a leaked key cannot mint its own replacements.
 
 **Nutrients are stored per 100 g.** Both upstream sources publish that basis,
 so importing is lossless, and every derived figure — a serving, a recipe row, a
@@ -277,7 +325,14 @@ GET    /foods/{id}               PUT    /foods/{id}             DELETE /foods/{i
 GET    /foods/search/external            # USDA + Open Food Facts
 GET    /foods/barcode/{upc}              # local hit and/or importable candidate
 GET    /foods/external/{source}/{id}     # full upstream record
-POST   /foods/import                     # idempotent on (source, source_id)
+POST   /foods/import                     # idempotent; will not overwrite a local edit
+GET    /foods/export                     # whole dataset, keyed by natural identity
+GET    /foods/{id}/revisions             # full history, with a per-revision diff
+POST   /foods/{id}/revert                # restores an old revision as a new one
+GET    /foods/{id}/verify        POST   /foods/{id}/verify      DELETE /foods/{id}/verify
+
+GET    /keys                     POST   /keys                   DELETE /keys/{id}
+GET    /admin/stats              GET    /admin/users            PATCH  /admin/users/{id}
 
 GET    /recipes                  POST   /recipes
 GET    /recipes/{id}             PUT    /recipes/{id}           DELETE /recipes/{id}
@@ -402,7 +457,12 @@ Queries are runtime-checked rather than `sqlx::query!`-checked, so neither
 
 ## Security
 
-- Passwords are hashed with Argon2id.
+- Passwords are hashed with Argon2id; API keys are SHA-256 digests of
+  server-generated 256-bit tokens, shown once and never recoverable.
+- A read-only API key is rejected for any unsafe HTTP method in the extractor,
+  before a handler runs. No API key can manage keys or administer the instance.
+- Suspending an account takes effect on the next request, for its session tokens
+  and its API keys alike, rather than whenever a token happens to expire.
 - Sign-in returns the same error whether the account is unknown or the password
   is wrong.
 - Every user-owned query filters on the authenticated user id; `CurrentUser` is

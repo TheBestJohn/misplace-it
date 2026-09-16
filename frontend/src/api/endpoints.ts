@@ -1,5 +1,8 @@
 import { request } from './client'
 import type {
+  AdminStats,
+  AdminUserRow,
+  ApiKey,
   AuthResponse,
   BarcodeLookup,
   DiaryDay,
@@ -7,8 +10,11 @@ import type {
   DiarySummary,
   ExternalFood,
   ExternalSearchResponse,
+  CreatedApiKey,
   Food,
   FoodDetail,
+  FoodRevision,
+  FoodVerification,
   Health,
   Nutrient,
   NutritionTarget,
@@ -21,6 +27,7 @@ import type {
   RecipeSummary,
   WeightEntry,
   TargetKind,
+  Verdict,
   WeightStats,
 } from './types'
 
@@ -60,6 +67,12 @@ export interface FoodInput {
   sodium_mg?: number | null
   serving_size_g: number
   serving_label?: string | null
+  /** Makes this food a preparation variant of another. */
+  variant_of?: string | null
+  /** Required with `variant_of`, rejected without it. */
+  variant_label?: string | null
+  /** Stored on the revision this write creates, not on the food. */
+  edit_summary?: string | null
 }
 
 export const api = {
@@ -122,6 +135,28 @@ export const api = {
   lookupBarcode: (upc: string) => request<BarcodeLookup>(`/foods/barcode/${upc}`),
   importFood: (body: ExternalFood) =>
     request<FoodDetail>('/foods/import', { method: 'POST', body }),
+
+  foodRevisions: (id: string) => request<FoodRevision[]>(`/foods/${id}/revisions`),
+  foodVerifications: (id: string) => request<FoodVerification[]>(`/foods/${id}/verify`),
+  verifyFood: (id: string, verdict: Verdict, note?: string) =>
+    request<FoodDetail>(`/foods/${id}/verify`, { method: 'POST', body: { verdict, note } }),
+  withdrawVerification: (id: string) =>
+    request<FoodDetail>(`/foods/${id}/verify`, { method: 'DELETE' }),
+  revertFood: (id: string, revision: number, reason?: string) =>
+    request<FoodDetail>(`/foods/${id}/revert`, { method: 'POST', body: { revision, reason } }),
+  exportFoodsUrl: (verifiedOnly: boolean) =>
+    `/api/v1/foods/export${verifiedOnly ? '?verified_only=true' : ''}`,
+
+  listApiKeys: () => request<ApiKey[]>('/keys'),
+  createApiKey: (body: { name: string; scopes?: ('read' | 'write')[]; expires_in_days?: number }) =>
+    request<CreatedApiKey>('/keys', { method: 'POST', body }),
+  revokeApiKey: (id: string) => request<ApiKey>(`/keys/${id}`, { method: 'DELETE' }),
+
+  adminStats: () => request<AdminStats>('/admin/stats'),
+  adminUsers: (query: { q?: string; include_disabled?: boolean } = {}) =>
+    request<AdminUserRow[]>('/admin/users', { query }),
+  adminPatchUser: (id: string, body: { is_admin?: boolean; disabled?: boolean }) =>
+    request<AdminUserRow>(`/admin/users/${id}`, { method: 'PATCH', body }),
 
   listRecipes: (query: { q?: string; scope?: 'mine' | 'public' | 'all' } = {}) =>
     request<RecipeSummary[]>('/recipes', { query }),

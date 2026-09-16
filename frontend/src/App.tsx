@@ -6,6 +6,7 @@ import {
   LogOut,
   Search,
   Settings as SettingsIcon,
+  ShieldCheck,
   TrendingUp,
 } from 'lucide-react'
 
@@ -22,8 +23,17 @@ import RecipesPage from '@/pages/RecipesPage'
 import RecipeEditorPage from '@/pages/RecipeEditorPage'
 import WeightPage from '@/pages/WeightPage'
 import SettingsPage from '@/pages/SettingsPage'
+import AdminPage from '@/pages/AdminPage'
 
-const NAV = [
+interface NavItem {
+  to: string
+  label: string
+  icon: typeof CircleDot
+  /** Only match this exact path — otherwise "/" stays active everywhere. */
+  end?: boolean
+}
+
+const NAV: NavItem[] = [
   { to: '/', label: 'Today', icon: CircleDot, end: true },
   { to: '/diary', label: 'Diary', icon: LayoutList },
   { to: '/foods', label: 'Foods', icon: Search },
@@ -31,6 +41,12 @@ const NAV = [
   { to: '/weight', label: 'Weight', icon: TrendingUp },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
+
+/**
+ * Shown only to administrators. Hiding it is presentation, not security — the
+ * page and every endpoint behind it check the flag against the database.
+ */
+const ADMIN_NAV: NavItem = { to: '/admin', label: 'Admin', icon: ShieldCheck }
 
 export default function App() {
   const { user, loading, signOut } = useAuth()
@@ -69,7 +85,7 @@ export default function App() {
           aria-label="Main"
           className="mx-auto flex w-full max-w-5xl gap-1 overflow-x-auto px-3 pb-2"
         >
-          {NAV.map(({ to, label, icon: Icon, end }) => (
+          {(user.is_admin ? [...NAV, ADMIN_NAV] : NAV).map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -101,6 +117,7 @@ export default function App() {
           <Route path="/recipes/:id" element={<RecipeEditorPage />} />
           <Route path="/weight" element={<WeightPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/admin" element={<AdminPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

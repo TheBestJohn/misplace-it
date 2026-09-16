@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/select'
 import TargetsEditor from '@/components/TargetsEditor'
 import RemindersEditor from '@/components/RemindersEditor'
+import ApiKeysCard from '@/components/ApiKeysCard'
 import { ErrorNote, Spinner } from '@/components/shared'
 
 const ACTIVITY = [
@@ -218,6 +219,8 @@ export default function SettingsPage() {
       <TargetsEditor suggestion={suggestion} />
 
       <RemindersEditor />
+
+      <ApiKeysCard />
     </div>
   )
 }
