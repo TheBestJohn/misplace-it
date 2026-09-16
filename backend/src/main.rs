@@ -10,6 +10,7 @@ mod state;
 
 use std::time::Duration;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue, Method};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -69,8 +70,13 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
 
     let bind_addr = config.bind_addr.clone();
+    let max_upload = config.max_upload_bytes;
     let cors = build_cors(&config);
     let state = AppState::new(db, config, http);
+
+    // Fail at boot rather than on someone's first upload.
+    state.photos.ensure_ready().await?;
+    tracing::info!(dir = %state.config.photo_dir, "photo storage ready");
 
     let app = Router::new()
         .nest("/api/v1", routes::api_router())
@@ -78,6 +84,9 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/openapi.json",
             get(|| async { Json(openapi::ApiDoc::openapi()) }),
         )
+        // Axum caps request bodies at 2 MB by default, which a photo exceeds
+        // immediately. The store enforces the real limit after decoding.
+        .layer(DefaultBodyLimit::max(max_upload + 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(cors)

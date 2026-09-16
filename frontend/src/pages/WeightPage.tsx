@@ -22,6 +22,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Empty, ErrorNote, Spinner } from '@/components/shared'
+import WeighInPhotos from '@/components/WeighInPhotos'
+import ReminderBanner from '@/components/ReminderBanner'
 
 const RANGES = [
   { label: '30d', days: 30 },
@@ -114,6 +116,8 @@ export default function WeightPage() {
           <ToggleGroupItem value="lb">lb</ToggleGroupItem>
         </ToggleGroup>
       </div>
+
+      <ReminderBanner />
 
       <Card>
         <CardHeader>
@@ -259,23 +263,26 @@ export default function WeightPage() {
           {entries.data?.length === 0 && <Empty>Nothing yet.</Empty>}
           <ul className="divide-y">
             {entries.data?.map((entry) => (
-              <li key={entry.id} className="flex items-center gap-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <p className="tabular font-medium">{display(entry.weight_kg)}</p>
-                  <p className="text-muted-foreground truncate text-xs">
-                    {prettyDate(entry.recorded_on)}
-                    {entry.body_fat_pct != null ? ` · ${round(entry.body_fat_pct)}% body fat` : ''}
-                    {entry.note ? ` · ${entry.note}` : ''}
-                  </p>
+              <li key={entry.id} className="space-y-2 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="tabular font-medium">{display(entry.weight_kg)}</p>
+                    <p className="text-muted-foreground truncate text-xs">
+                      {prettyDate(entry.recorded_on)}
+                      {entry.body_fat_pct != null ? ` · ${round(entry.body_fat_pct)}% body fat` : ''}
+                      {entry.note ? ` · ${entry.note}` : ''}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Delete entry for ${entry.recorded_on}`}
+                    onClick={() => remove.mutate(entry.id)}
+                  >
+                    <X />
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`Delete entry for ${entry.recorded_on}`}
-                  onClick={() => remove.mutate(entry.id)}
-                >
-                  <X />
-                </Button>
+                <WeighInPhotos weightEntryId={entry.id} />
               </li>
             ))}
           </ul>

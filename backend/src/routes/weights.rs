@@ -180,6 +180,11 @@ pub async fn delete(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<axum::http::StatusCode> {
+    // The foreign key would cascade the photo rows, but nothing in the
+    // database knows about the filesystem, so the files have to be reclaimed
+    // here or they are orphaned for good.
+    super::photos::delete_for_weight_entry(&state, user.id, id).await?;
+
     let result = sqlx::query("DELETE FROM weight_entries WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user.id)

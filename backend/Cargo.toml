@@ -6,8 +6,8 @@ rust-version = "1.82"
 description = "Nutrition, macro, recipe and weight tracking API"
 
 [dependencies]
-axum = { version = "0.8", features = ["macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "io-util"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
 
@@ -39,6 +39,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
 async-stream = "0.3"
+# Decoding and re-encoding uploads is what bounds their size and, just as
+# importantly, drops EXIF — progress photos routinely carry GPS coordinates.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 validator = { version = "0.19", features = ["derive"] }
 

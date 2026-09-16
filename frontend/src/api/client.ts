@@ -27,12 +27,14 @@ const BASE = '/api/v1'
 interface RequestOptions {
   method?: string
   body?: unknown
+  /** Multipart payload. Mutually exclusive with `body`. */
+  form?: FormData
   query?: Record<string, string | number | boolean | undefined | null>
   signal?: AbortSignal
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, query, signal } = options
+  const { method = 'GET', body, form, query, signal } = options
 
   const url = new URL(BASE + path, window.location.origin)
   if (query) {
@@ -46,13 +48,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const headers: Record<string, string> = {}
   const token = tokenStore.get()
   if (token) headers.Authorization = `Bearer ${token}`
+  // FormData sets its own Content-Type, boundary included; setting it here
+  // would produce a header that does not match the body.
   if (body !== undefined) headers['Content-Type'] = 'application/json'
 
   const response = await fetch(url.toString(), {
     method,
     headers,
     signal,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: form ?? (body === undefined ? undefined : JSON.stringify(body)),
   })
 
   if (response.status === 401) {
@@ -84,4 +88,25 @@ function safeParse(text: string): unknown {
   } catch {
     return { message: text }
   }
+}
+
+/**
+ * Fetch an authenticated image and hand back an object URL.
+ *
+ * Photos are served by the API rather than as static files so ownership is
+ * checked on every read, which means `<img src>` cannot fetch them directly —
+ * it sends no Authorization header. The caller must revoke the returned URL.
+ */
+export async function fetchImageObjectUrl(path: string): Promise<string> {
+  const token = tokenStore.get()
+  const response = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (response.status === 401) {
+    tokenStore.clear()
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+    throw new ApiError(401, 'unauthorized', 'Your session has expired.')
+  }
+  if (!response.ok) throw new ApiError(response.status, 'error', 'Could not load the image')
+  return URL.createObjectURL(await response.blob())
 }

@@ -19,6 +19,8 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
 | **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
+| **Progress photos** | Attach photos to a weigh-in. Downscaled and re-encoded on upload, which strips EXIF — phone photos carry GPS |
+| **Reminders** | "It's been three weeks since your last weigh-in", at a cadence you set |
 | **Dark mode** | Follows your OS by default, with a toggle that overrides it. Applied before first paint, so there is no flash of the wrong theme |
 | **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
 | **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
@@ -72,12 +74,22 @@ Postgres that isn't accepting connections yet.
 
 ### Backups
 
-Everything lives in Postgres:
+Two things to keep: the database, and the photo volume.
 
 ```bash
+# database
 docker compose exec -T db pg_dump -U misplaceit misplaceit | gzip > backup.sql.gz
 gunzip -c backup.sql.gz | docker compose exec -T db psql -U misplaceit misplaceit
+
+# photos
+docker compose cp api:/data/photos ./photo-backup
+docker compose cp ./photo-backup/. api:/data/photos
 ```
+
+Photo bytes live on a volume rather than in Postgres. A few hundred kilobytes a
+row would work, but it would make every `pg_dump` carry every photo and every
+restore rewrite them. The cost of that choice is this second command — if you
+back up only the database, the photos are gone.
 
 ---
 
@@ -94,6 +106,7 @@ Set in `.env` (see `.env.example`).
 | `JWT_TTL_HOURS` | `168` | Session length. |
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
+| `MAX_UPLOAD_MB` | `15` | Largest accepted photo, before downscaling. |
 | `TRGM_WORD_THRESHOLD` | `0.4` | Fuzzy-search strictness, 0–1. Lower matches more typos and more noise. |
 | `RUST_LOG` | `misplace_it=info,…` | `tracing-subscriber` filter. |
 
@@ -145,6 +158,21 @@ accumulates the same product entered by several people. Rows matching on name,
 brand and macros are collapsed to the oldest; two foods that merely share a name
 but differ nutritionally are different things and both stay. Collapsing after
 the limit would let five copies of one food consume the entire result budget.
+
+**Uploads are re-encoded, not stored as received.** That costs CPU per upload
+and buys three things: EXIF is dropped (phone photos routinely carry GPS, and a
+progress photo is usually taken at home), a 12 MP upload becomes a few hundred
+kilobytes so the volume grows predictably, and anything that does not decode is
+rejected rather than stored and served back later. Photos are served by the API
+with an ownership check, not as static files, so a guessed URL is not enough to
+read one.
+
+**Reminders have no scheduler.** A reminder stores only a cadence; whether you
+are overdue is derived, on read, from the records you already keep. So there is
+no job queue, nothing to catch up after the container has been down for a week,
+and no stored "next due" date that can drift out of step with reality. The
+trade-off is that nothing can reach out to you — these appear in the app, not in
+your inbox.
 
 **Targets are standing settings, never set up daily.** A target belongs to you,
 not to a date: set it once and it is evaluated against every day, including past
@@ -201,6 +229,11 @@ GET    /targets/{nutrient}       DELETE /targets/{nutrient}
 
 GET    /weights                  POST   /weights                GET  /weights/stats
 GET    /weights/{id}             PATCH  /weights/{id}           DELETE /weights/{id}
+GET    /weights/{id}/photos      POST   /weights/{id}/photos    # multipart
+GET    /photos/{id}              DELETE /photos/{id}            PATCH /photos/{id}/caption
+
+GET    /reminders                PUT    /reminders
+GET    /reminders/status                 # what you are overdue for, right now
 
 GET    /foods                    POST   /foods
 GET    /foods/{id}               PUT    /foods/{id}             DELETE /foods/{id}

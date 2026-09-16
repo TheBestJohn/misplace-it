@@ -96,18 +96,10 @@ export function TargetBar({ target }: { target: TargetProgress }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="flex items-center gap-2">
-          {label}
-          <Badge
-            variant="outline"
-            className={cn(
-              'px-1.5 py-0 text-[10px] tracking-wide uppercase',
-              kind === 'goal' ? 'border-protein/40 text-protein' : 'border-carbs/40 text-carbs',
-            )}
-          >
-            {kind}
-          </Badge>
-        </span>
+        {/* No kind badge: the caption below already says "left" for a budget
+            and "to go" for a goal, and only a budget ever turns red. The badge
+            repeated that in a third place. */}
+        <span>{label}</span>
         <span className="tabular whitespace-nowrap">
           {round(consumed)}
           <span className="text-muted-foreground">

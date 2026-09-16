@@ -30,7 +30,13 @@ services:
       JWT_TTL_HOURS: ${JWT_TTL_HOURS:-168}
       USDA_API_KEY: ${USDA_API_KEY:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      PHOTO_DIR: /data/photos
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-15}
       RUST_LOG: ${RUST_LOG:-misplace_it=info,tower_http=info,sqlx=warn}
+    volumes:
+      # Photo bytes live on disk rather than in Postgres, so they need their
+      # own volume — and their own line in your backup routine.
+      - photo-data:/data/photos
     # Not published to the host: only the web container needs to reach it.
     expose:
       - "8080"
@@ -47,3 +53,4 @@ services:
 
 volumes:
   db-data:
+  photo-data:

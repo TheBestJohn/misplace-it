@@ -12,6 +12,10 @@ import type {
   Health,
   Nutrient,
   NutritionTarget,
+  Photo,
+  Reminder,
+  ReminderKind,
+  ReminderStatus,
   Profile,
   Recipe,
   RecipeSummary,
@@ -76,6 +80,23 @@ export const api = {
     request<NutritionTarget[]>('/targets', { method: 'PUT', body: { targets } }),
   deleteTarget: (nutrient: Nutrient) =>
     request<void>(`/targets/${nutrient}`, { method: 'DELETE' }),
+
+  listPhotos: (weightEntryId: string) =>
+    request<Photo[]>(`/weights/${weightEntryId}/photos`),
+  uploadPhoto: (weightEntryId: string, file: File, caption?: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    if (caption) form.append('caption', caption)
+    // No Content-Type header: the browser has to set it itself so the
+    // multipart boundary matches the body it generates.
+    return request<Photo>(`/weights/${weightEntryId}/photos`, { method: 'POST', form })
+  },
+  deletePhoto: (id: string) => request<void>(`/photos/${id}`, { method: 'DELETE' }),
+
+  listReminders: () => request<Reminder[]>('/reminders'),
+  reminderStatus: () => request<ReminderStatus[]>('/reminders/status'),
+  replaceReminders: (reminders: { kind: ReminderKind; every_days: number; enabled: boolean }[]) =>
+    request<Reminder[]>('/reminders', { method: 'PUT', body: { reminders } }),
 
   listWeights: (query: { from?: string; to?: string; limit?: number } = {}) =>
     request<WeightEntry[]>('/weights', { query }),

@@ -19,6 +19,10 @@ pub struct Config {
     /// strict for autocomplete: a one-letter typo in a short query lands around
     /// 0.5. Lower it and more typos match, at the cost of more noise.
     pub trgm_word_threshold: f64,
+    /// Where photo files are written. A mounted volume in Docker.
+    pub photo_dir: String,
+    /// Largest accepted upload, before downscaling.
+    pub max_upload_bytes: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -51,6 +55,13 @@ impl Config {
             allow_registration: opt("ALLOW_REGISTRATION")
                 .map(|v| v != "false" && v != "0")
                 .unwrap_or(true),
+            photo_dir: opt("PHOTO_DIR").unwrap_or_else(|| "./data/photos".into()),
+            max_upload_bytes: opt("MAX_UPLOAD_MB")
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|mb| *mb > 0 && *mb <= 200)
+                .unwrap_or(15)
+                * 1024
+                * 1024,
             trgm_word_threshold: opt("TRGM_WORD_THRESHOLD")
                 .and_then(|v| v.parse().ok())
                 .filter(|v: &f64| (0.0..=1.0).contains(v))

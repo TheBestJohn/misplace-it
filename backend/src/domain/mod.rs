@@ -1,7 +1,9 @@
 pub mod diary;
 pub mod food;
 pub mod nutrients;
+pub mod photo;
 pub mod recipe;
+pub mod reminder;
 pub mod target;
 pub mod user;
 pub mod weight;

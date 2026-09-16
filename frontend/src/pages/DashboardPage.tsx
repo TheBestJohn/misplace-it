@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Empty, ErrorNote, MacroRow, Spinner, TargetList } from '@/components/shared'
+import ReminderBanner from '@/components/ReminderBanner'
 
 /** Recharts takes colours as values, not classes, so they come from the theme
  *  variables the rest of the UI uses rather than being hard-coded here. */
@@ -69,6 +70,8 @@ export default function DashboardPage() {
           Hi {user?.display_name.split(' ')[0]} 👋
         </span>
       </div>
+
+      <ReminderBanner />
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card>

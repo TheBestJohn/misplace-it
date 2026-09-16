@@ -213,20 +213,95 @@ expect "a multi-word typo finds it too"       "$(sse 'rolld%20oatts' | grep -c '
 expect "per-word tier is skipped when unneeded" "$(sse 'oatz' | grep -c 'fuzzy_words')"             "0"
 
 # A global food table accumulates the same product added by different people.
-DUPE='{"name":"Smoke dupe probe","calories_kcal":100,"protein_g":5,"carbs_g":10,"fat_g":2,"serving_size_g":100}'
+# The probe name is scoped to this run: the table is global AND persistent, so
+# a previous run's rows are legitimately still there and would be counted.
+PROBE="Smoke dupe probe $(date +%s)-$RANDOM"
+DUPE="{\"name\":\"$PROBE\",\"calories_kcal\":100,\"protein_g\":5,\"carbs_g\":10,\"fat_g\":2,\"serving_size_g\":100}"
+PROBE_Q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$PROBE")
 curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' -d "$DUPE" >/dev/null
 curl -fsS -X POST "$BASE/foods" -H "$OAUTH" -H 'content-type: application/json' -d "$DUPE" >/dev/null
 expect "identical foods collapse to one result" \
-  "$(sse 'Smoke%20dupe%20probe' | grep -o '"name":"Smoke dupe probe"' | wc -l | tr -d ' ')" "1"
+  "$(sse "$PROBE_Q" | grep -o "\"name\":\"$PROBE\"" | wc -l | tr -d ' ')" "1"
 
 # ...but two foods that merely share a name are different things, and both stay.
 curl -fsS -X POST "$BASE/foods" -H "$OAUTH" -H 'content-type: application/json' \
-  -d '{"name":"Smoke dupe probe","calories_kcal":250,"protein_g":9,"carbs_g":30,"fat_g":8,"serving_size_g":100}' >/dev/null
+  -d "{\"name\":\"$PROBE\",\"calories_kcal\":250,\"protein_g\":9,\"carbs_g\":30,\"fat_g\":8,\"serving_size_g\":100}" >/dev/null
 expect "a nutritionally different namesake is kept" \
-  "$(sse 'Smoke%20dupe%20probe' | grep -o '"name":"Smoke dupe probe"' | wc -l | tr -d ' ')" "2"
+  "$(sse "$PROBE_Q" | grep -o "\"name\":\"$PROBE\"" | wc -l | tr -d ' ')" "2"
 expect "the stream always ends with done"     "$(sse 'oats' | grep -c 'event: done')"               "1"
 expect "an empty query ends cleanly"          "$(sse '' | grep -c 'event: done')"                   "1"
 expect "a miss returns no tiers"              "$(sse 'zzzzznotafood' | grep -c '"tier"')"           "0"
+
+echo "== progress photos"
+# A real PNG, built without third-party libraries so this script keeps its
+# only dependency on python3 itself.
+PHOTO=$(mktemp /tmp/smoke-photo-XXXXXX.png)
+python3 - "$PHOTO" <<'PYEOF'
+import struct, sys, zlib
+W = H = 600
+raw = b"".join(b"\x00" + bytes([(x * 7) % 256, (y * 5) % 256, 128][c % 3] for x in range(W) for c in range(3)) for y in range(H))
+def chunk(tag, data):
+    body = tag + data
+    return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+png = (b"\x89PNG\r\n\x1a\n"
+       + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+       + chunk(b"IDAT", zlib.compress(raw, 6))
+       + chunk(b"IEND", b""))
+open(sys.argv[1], "wb").write(png)
+PYEOF
+
+PHOTO_ENTRY=$(curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"recorded_on":"2026-05-05","weight_kg":81.1}' | j "['id']")
+UPLOADED=$(curl -fsS -X POST "$BASE/weights/$PHOTO_ENTRY/photos" -H "$AUTH" \
+  -F "file=@$PHOTO" -F "caption=Week one")
+
+expect "photo attaches to the weigh-in" "$(echo "$UPLOADED" | j "['weight_entry_id']")" "$PHOTO_ENTRY"
+expect "caption is kept"                "$(echo "$UPLOADED" | j "['caption']")"          "Week one"
+# Uploads are re-encoded, which is what bounds their size and drops EXIF.
+expect "re-encoded as jpeg"             "$(echo "$UPLOADED" | j "['content_type']")"     "image/jpeg"
+PHOTO_ID=$(echo "$UPLOADED" | j "['id']")
+
+SERVED=$(mktemp /tmp/smoke-served-XXXXXX.jpg)
+curl -fsS "$BASE/photos/$PHOTO_ID" -H "$AUTH" -o "$SERVED"
+expect "served bytes are a jpeg" "$(od -An -tx1 -N2 "$SERVED" | tr -d ' \n')" "ffd8"
+expect "and carry no EXIF segment" "$(grep -c Exif "$SERVED" || true)" "0"
+rm -f "$SERVED"
+
+status "another account cannot read the photo" 404 "$BASE/photos/$PHOTO_ID" -H "$OAUTH"
+status "an unauthenticated request cannot"     401 "$BASE/photos/$PHOTO_ID"
+status "another account cannot attach one"     404 -X POST "$BASE/weights/$PHOTO_ENTRY/photos" -H "$OAUTH" -F "file=@$PHOTO"
+
+# Anything that does not decode is rejected rather than stored and served back.
+NOTAPHOTO=$(mktemp /tmp/smoke-notaphoto-XXXXXX.jpg)
+printf '#!/bin/sh\necho not a photo\n' > "$NOTAPHOTO"
+status "a non-image is rejected" 400 -X POST "$BASE/weights/$PHOTO_ENTRY/photos" -H "$AUTH" -F "file=@$NOTAPHOTO"
+
+status "deleting the weigh-in succeeds"   204 -X DELETE "$BASE/weights/$PHOTO_ENTRY" -H "$AUTH"
+status "and takes its photos with it"     404 "$BASE/photos/$PHOTO_ID" -H "$AUTH"
+rm -f "$PHOTO" "$NOTAPHOTO"
+
+echo "== reminders"
+# Reminders store a cadence; being overdue is derived from your own records,
+# so there is no scheduler and nothing to catch up.
+expect "every kind is offered"     "$(curl -fsS "$BASE/reminders" -H "$AUTH" | j ".__len__()")" "3"
+expect "and each is off until set" "$(curl -fsS "$BASE/reminders" -H "$AUTH" | j " and [r['enabled'] for r in d]")" "[False, False, False]"
+
+curl -fsS -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"reminders":[{"kind":"weigh_in","every_days":7,"enabled":true}]}' >/dev/null
+expect "a disabled kind is absent from status" "$(curl -fsS "$BASE/reminders/status" -H "$AUTH" | j ".__len__()")" "1"
+
+# The account has weigh-ins from earlier in this run, all far in the past.
+expect "an old weigh-in reads as due" \
+  "$(curl -fsS "$BASE/reminders/status" -H "$AUTH" | j "[0]['due']")" "True"
+
+# Weighing in today clears it, with no separate state to update.
+curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' -d '{"weight_kg":80.0}' >/dev/null
+expect "weighing in today clears it"  "$(curl -fsS "$BASE/reminders/status" -H "$AUTH" | j "[0]['due']")"     "False"
+expect "and says so"                  "$(curl -fsS "$BASE/reminders/status" -H "$AUTH" | j "[0]['message']")" "Weigh in — done today."
+
+status "reject a zero cadence"     400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"weigh_in","every_days":0}]}'
+status "reject an unknown kind"    400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"floss","every_days":1}]}'
+status "reject a duplicate kind"   400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"weigh_in","every_days":7},{"kind":"weigh_in","every_days":3}]}'
 
 echo "== referential integrity"
 status "food in use cannot be deleted"   400 -X DELETE "$BASE/foods/$OATS" -H "$AUTH"
@@ -234,7 +309,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 23 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 28 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

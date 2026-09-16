@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::config::Config;
-use crate::services::{off::OpenFoodFactsClient, usda::UsdaClient};
+use crate::services::{off::OpenFoodFactsClient, photos::PhotoStore, usda::UsdaClient};
 
 /// Shared, cheap-to-clone application state handed to every handler.
 #[derive(Clone)]
@@ -14,6 +14,7 @@ pub struct Inner {
     pub config: Config,
     pub usda: UsdaClient,
     pub off: OpenFoodFactsClient,
+    pub photos: PhotoStore,
 }
 
 impl AppState {
@@ -24,11 +25,13 @@ impl AppState {
             config.usda_api_key.clone(),
         );
         let off = OpenFoodFactsClient::new(http, config.off_base_url.clone());
+        let photos = PhotoStore::new(config.photo_dir.clone(), config.max_upload_bytes);
         Self(Arc::new(Inner {
             db,
             config,
             usda,
             off,
+            photos,
         }))
     }
 }

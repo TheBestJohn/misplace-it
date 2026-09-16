@@ -238,3 +238,38 @@ export interface Health {
   database: string
   usda_configured: boolean
 }
+
+export interface Photo {
+  id: string
+  weight_entry_id: string
+  content_type: string
+  byte_size: number
+  width: number
+  height: number
+  caption: string | null
+  created_at: string
+  /** Served by the API, not as a static file — needs the auth header. */
+  url: string
+}
+
+export type ReminderKind = 'weigh_in' | 'food_log' | 'progress_photo'
+
+export interface Reminder {
+  kind: ReminderKind
+  label: string
+  every_days: number
+  enabled: boolean
+}
+
+export interface ReminderStatus {
+  kind: ReminderKind
+  label: string
+  every_days: number
+  enabled: boolean
+  last_on: string | null
+  days_since: number | null
+  due: boolean
+  overdue_days: number
+  /** Pre-worded by the server so every client says the same thing. */
+  message: string
+}
