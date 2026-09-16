@@ -31,10 +31,23 @@ RUN apt-get update \
 
 COPY --from=builder /build/target/release/misplace-it /usr/local/bin/misplace-it
 
+# Create the photo directory in the IMAGE, owned by the runtime user.
+#
+# This is load-bearing, not tidiness. When Docker mounts an empty named volume
+# at a path, it seeds the volume from the image's directory at that path —
+# ownership included. Without this the path does not exist in the image, so
+# Docker creates the mountpoint root:root, the process runs as `app`, and its
+# first write fails with EACCES. The boot-time writability check then does
+# exactly what it should and refuses to start, which is what broke CI.
+RUN mkdir -p /data/photos && chown -R app:app /data/photos
+
 USER app
 WORKDIR /home/app
 
 ENV BIND_ADDR=0.0.0.0:8080
+# Matches the directory created above, so the image is correct when run on its
+# own and not only under the compose file.
+ENV PHOTO_DIR=/data/photos
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \

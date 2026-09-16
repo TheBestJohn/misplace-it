@@ -87,6 +87,12 @@ docker compose cp api:/data/photos ./photo-backup
 docker compose cp ./photo-backup/. api:/data/photos
 ```
 
+The photo volume is mounted at `/data/photos`, a directory the image creates
+and owns as the runtime user. That ownership matters: Docker seeds an empty
+named volume from the image's directory at the mount path, ownership included,
+so without it the volume is created root-owned and the non-root process cannot
+write to it.
+
 Photo bytes live on a volume rather than in Postgres. A few hundred kilobytes a
 row would work, but it would make every `pg_dump` carry every photo and every
 restore rewrite them. The cost of that choice is this second command — if you

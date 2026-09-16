@@ -232,6 +232,44 @@ mod tests {
         );
     }
 
+    /// The boot check has to fail loudly on a storage root it cannot use.
+    /// This is what stops the service coming up and then rejecting the first
+    /// upload — and it is what caught a Docker volume being created root-owned
+    /// under a non-root runtime user.
+    ///
+    /// The unusable case here is a FILE where the directory should be, not a
+    /// permission bit: root ignores permission bits, so a chmod-based test
+    /// would pass in a root container and prove nothing.
+    #[tokio::test]
+    async fn ensure_ready_fails_when_the_root_cannot_be_used() {
+        let file = std::env::temp_dir().join(format!("misplace-probe-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&file, b"not a directory").await.unwrap();
+
+        let store = PhotoStore::new(file.join("photos"), 1024);
+        assert!(
+            store.ensure_ready().await.is_err(),
+            "a storage root that cannot be created must fail at boot",
+        );
+
+        tokio::fs::remove_file(&file).await.ok();
+    }
+
+    #[tokio::test]
+    async fn ensure_ready_creates_a_usable_root() {
+        let dir = std::env::temp_dir().join(format!("misplace-ok-{}", uuid::Uuid::new_v4()));
+        let store = PhotoStore::new(&dir, 1024);
+
+        store.ensure_ready().await.expect("should create the root");
+        assert!(dir.is_dir(), "the root should exist after the check");
+        // The probe must not be left behind.
+        assert!(
+            !dir.join(".write-probe").exists(),
+            "probe file was not cleaned up"
+        );
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
+    }
+
     #[test]
     fn paths_cannot_escape_the_storage_root() {
         let store = PhotoStore::new("/var/lib/misplace-it/photos", 1024);

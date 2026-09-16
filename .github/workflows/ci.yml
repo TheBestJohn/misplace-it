@@ -139,4 +139,15 @@ jobs:
           curl -fsS http://127.0.0.1:8088/api/v1/health
           # SPA fallback: a client-side route must serve the app shell, not 404.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8088/weight)" = 200
-          docker compose down -v
+
+      # Without this, a container that dies at boot shows up only as
+      # "dependency failed to start ... is unhealthy", with no reason.
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
