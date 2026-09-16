@@ -211,9 +211,11 @@ pub async fn delete(
         .execute(&state.db)
         .await
         .map_err(|e| match e {
-            sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => ApiError::bad_request(
-                "this food is used by a recipe or diary entry and cannot be deleted",
-            ),
+            sqlx::Error::Database(ref db) if db.is_foreign_key_violation() => {
+                ApiError::bad_request(
+                    "this food is used by a recipe or diary entry and cannot be deleted",
+                )
+            }
             other => other.into(),
         })?;
 
@@ -380,7 +382,11 @@ pub async fn import(
     .bind(body.sugar_g)
     .bind(body.saturated_fat_g)
     .bind(body.sodium_mg)
-    .bind(if body.serving_size_g > 0.0 { body.serving_size_g } else { 100.0 })
+    .bind(if body.serving_size_g > 0.0 {
+        body.serving_size_g
+    } else {
+        100.0
+    })
     .bind(body.serving_label.as_deref())
     .fetch_one(&state.db)
     .await?;

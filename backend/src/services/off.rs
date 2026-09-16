@@ -68,7 +68,9 @@ impl OpenFoodFactsClient {
             .query(&[("fields", FIELDS)])
             .send()
             .await
-            .map_err(|e| ApiError::UpstreamUnavailable(format!("Open Food Facts request failed: {e}")))?;
+            .map_err(|e| {
+                ApiError::UpstreamUnavailable(format!("Open Food Facts request failed: {e}"))
+            })?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -108,7 +110,9 @@ impl OpenFoodFactsClient {
             ])
             .send()
             .await
-            .map_err(|e| ApiError::UpstreamUnavailable(format!("Open Food Facts request failed: {e}")))?;
+            .map_err(|e| {
+                ApiError::UpstreamUnavailable(format!("Open Food Facts request failed: {e}"))
+            })?;
 
         if !resp.status().is_success() {
             return Err(ApiError::UpstreamUnavailable(format!(

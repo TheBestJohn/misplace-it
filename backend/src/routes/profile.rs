@@ -24,7 +24,10 @@ const USER_COLUMNS: &str = r#"
     security(("bearer" = [])),
     responses((status = 200, body = Profile))
 )]
-pub async fn get_profile(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Profile>> {
+pub async fn get_profile(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Profile>> {
     let row: UserRow = sqlx::query_as(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
         .bind(user.id)
         .fetch_optional(&state.db)

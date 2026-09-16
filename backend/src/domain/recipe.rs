@@ -99,7 +99,11 @@ pub struct Recipe {
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema)]
 pub struct RecipeItemInput {
     pub food_id: Uuid,
-    #[validate(range(min = 0.1, max = 100000.0, message = "must be between 0.1 and 100000 g"))]
+    #[validate(range(
+        min = 0.1,
+        max = 100000.0,
+        message = "must be between 0.1 and 100000 g"
+    ))]
     pub quantity_g: f64,
     #[validate(length(max = 200, message = "must be at most 200 characters"))]
     pub note: Option<String>,

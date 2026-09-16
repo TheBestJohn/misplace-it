@@ -10,7 +10,7 @@ use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::diary::{
-    CreateDiaryEntryRequest, DailyTotal, DiaryDay, DiaryEntry, DiaryRow, DiarySummary, DayTargets,
+    CreateDiaryEntryRequest, DailyTotal, DayTargets, DiaryDay, DiaryEntry, DiaryRow, DiarySummary,
     MealGroup, PatchDiaryEntryRequest,
 };
 use crate::domain::nutrients::Nutrients;
@@ -150,11 +150,8 @@ pub async fn day(
     let meals: Vec<MealGroup> = meal_names
         .into_iter()
         .map(|meal| {
-            let group: Vec<DiaryEntry> = entries
-                .iter()
-                .filter(|e| e.meal == meal)
-                .cloned()
-                .collect();
+            let group: Vec<DiaryEntry> =
+                entries.iter().filter(|e| e.meal == meal).cloned().collect();
             let total: Nutrients = group.iter().map(|e| e.nutrients).sum();
             MealGroup {
                 meal,
@@ -336,9 +333,9 @@ pub async fn create(
     // CHECK constraint surface as an opaque error.
     let id: Uuid = match (body.food_id, body.recipe_id) {
         (Some(food_id), None) => {
-            let grams = body
-                .quantity_g
-                .ok_or_else(|| ApiError::bad_request("quantity_g is required when logging a food"))?;
+            let grams = body.quantity_g.ok_or_else(|| {
+                ApiError::bad_request("quantity_g is required when logging a food")
+            })?;
 
             // Ownership/visibility check before insert.
             super::foods::load_food(&state, user.id, food_id).await?;

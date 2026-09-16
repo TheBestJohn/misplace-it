@@ -109,7 +109,11 @@ pub struct CreateDiaryEntryRequest {
     pub meal: Option<String>,
     pub food_id: Option<Uuid>,
     pub recipe_id: Option<Uuid>,
-    #[validate(range(min = 0.1, max = 100000.0, message = "must be between 0.1 and 100000 g"))]
+    #[validate(range(
+        min = 0.1,
+        max = 100000.0,
+        message = "must be between 0.1 and 100000 g"
+    ))]
     pub quantity_g: Option<f64>,
     #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
     pub recipe_servings: Option<f64>,
@@ -120,7 +124,11 @@ pub struct CreateDiaryEntryRequest {
 pub struct PatchDiaryEntryRequest {
     pub logged_on: Option<NaiveDate>,
     pub meal: Option<String>,
-    #[validate(range(min = 0.1, max = 100000.0, message = "must be between 0.1 and 100000 g"))]
+    #[validate(range(
+        min = 0.1,
+        max = 100000.0,
+        message = "must be between 0.1 and 100000 g"
+    ))]
     pub quantity_g: Option<f64>,
     #[validate(range(min = 0.01, max = 1000.0, message = "must be between 0.01 and 1000"))]
     pub recipe_servings: Option<f64>,

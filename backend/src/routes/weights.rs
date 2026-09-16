@@ -19,8 +19,7 @@ pub fn router() -> Router<AppState> {
         .route("/{id}", get(get_one).patch(patch).delete(delete))
 }
 
-const COLUMNS: &str =
-    "id, recorded_on, weight_kg, body_fat_pct, note, created_at, updated_at";
+const COLUMNS: &str = "id, recorded_on, weight_kg, body_fat_pct, note, created_at, updated_at";
 
 #[derive(Debug, Deserialize, IntoParams)]
 #[serde(default)]

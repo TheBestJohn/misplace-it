@@ -79,7 +79,11 @@ impl UsdaClient {
 
     /// Free-text search. Returns `Ok(None)` when no API key is configured so the
     /// caller can degrade gracefully instead of failing the whole request.
-    pub async fn search(&self, query: &str, limit: i64) -> Result<Option<Vec<ExternalFood>>, ApiError> {
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Option<Vec<ExternalFood>>, ApiError> {
         let Some(key) = &self.api_key else {
             return Ok(None);
         };

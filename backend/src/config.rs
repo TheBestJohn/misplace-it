@@ -51,7 +51,10 @@ impl Config {
 }
 
 fn req(key: &'static str) -> Result<String, MissingEnv> {
-    env::var(key).ok().filter(|v| !v.is_empty()).ok_or(MissingEnv(key))
+    env::var(key)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .ok_or(MissingEnv(key))
 }
 
 fn opt(key: &str) -> Option<String> {

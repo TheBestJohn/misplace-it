@@ -82,11 +82,23 @@ pub struct UpsertFoodRequest {
     pub upc: Option<String>,
     #[validate(range(min = 0.0, max = 10000.0, message = "is out of range"))]
     pub calories_kcal: f64,
-    #[validate(range(min = 0.0, max = 100.0, message = "is out of range for a per-100g value"))]
+    #[validate(range(
+        min = 0.0,
+        max = 100.0,
+        message = "is out of range for a per-100g value"
+    ))]
     pub protein_g: f64,
-    #[validate(range(min = 0.0, max = 100.0, message = "is out of range for a per-100g value"))]
+    #[validate(range(
+        min = 0.0,
+        max = 100.0,
+        message = "is out of range for a per-100g value"
+    ))]
     pub carbs_g: f64,
-    #[validate(range(min = 0.0, max = 100.0, message = "is out of range for a per-100g value"))]
+    #[validate(range(
+        min = 0.0,
+        max = 100.0,
+        message = "is out of range for a per-100g value"
+    ))]
     pub fat_g: f64,
     pub fiber_g: Option<f64>,
     pub sugar_g: Option<f64>,
