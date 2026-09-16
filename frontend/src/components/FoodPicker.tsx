@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Barcode, Globe, Search } from 'lucide-react'
+import { ArrowLeft, Barcode, Globe, Plus, Search } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
 import type { ExternalFood, Food } from '@/api/types'
@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ErrorNote, SourceBadge, Spinner } from '@/components/shared'
+import FoodForm from '@/components/FoodForm'
 
 /** How each tier is labelled in the list. */
 const TIER_LABEL: Record<SearchTier, string> = {
@@ -43,6 +44,9 @@ export default function FoodPicker({
   const [barcode, setBarcode] = useState('')
   const [submittedBarcode, setSubmittedBarcode] = useState('')
   const [externalTerm, setExternalTerm] = useState('')
+  // When set, the picker swaps to the create form rather than opening a second
+  // dialog on top of the one it is already inside.
+  const [creating, setCreating] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   // Short debounce: the stream is fast enough that this is about not opening a
@@ -86,6 +90,24 @@ export default function FoodPicker({
     return out
   }, [search.results])
 
+  if (creating !== null) {
+    return (
+      <div className="space-y-3">
+        <Button variant="ghost" size="sm" className="px-0" onClick={() => setCreating(null)}>
+          <ArrowLeft /> Back to search
+        </Button>
+        <FoodForm
+          initialName={creating}
+          submitLabel="Create and use"
+          onCancel={() => setCreating(null)}
+          // Straight into the amount step: creating the food was a detour from
+          // logging it, not the goal.
+          onSaved={(food) => onPick(food)}
+        />
+      </div>
+    )
+  }
+
   return (
     <Tabs defaultValue="library" className="gap-3">
       <TabsList className="grid w-full grid-cols-3">
@@ -126,9 +148,14 @@ export default function FoodPicker({
 
           {!search.searching && debounced && search.results.length === 0 && (
             <Alert>
-              <AlertDescription>
-                Nothing matched “{debounced}”. Try the <strong>Databases</strong> or{' '}
-                <strong>Barcode</strong> tab to pull one in.
+              <AlertDescription className="w-full space-y-2">
+                <p>
+                  Nothing matched “{debounced}”. Try the <strong>Databases</strong> or{' '}
+                  <strong>Barcode</strong> tab, or add it yourself.
+                </p>
+                <Button variant="outline" size="sm" onClick={() => setCreating(debounced)}>
+                  <Plus /> Create “{debounced}”
+                </Button>
               </AlertDescription>
             </Alert>
           )}
@@ -138,12 +165,17 @@ export default function FoodPicker({
           )}
         </div>
 
-        {search.elapsedMs !== null && search.results.length > 0 && (
-          <p className="text-muted-foreground text-right text-[11px]">
-            {search.results.length} result{search.results.length === 1 ? '' : 's'} in{' '}
-            {search.elapsedMs}ms
-          </p>
-        )}
+        <div className="flex items-center justify-between gap-3">
+          <Button variant="ghost" size="sm" className="px-0" onClick={() => setCreating(debounced)}>
+            <Plus /> New food
+          </Button>
+          {search.elapsedMs !== null && search.results.length > 0 && (
+            <p className="text-muted-foreground text-[11px]">
+              {search.results.length} result{search.results.length === 1 ? '' : 's'} in{' '}
+              {search.elapsedMs}ms
+            </p>
+          )}
+        </div>
       </TabsContent>
 
       <TabsContent value="external" className="space-y-3">

@@ -226,6 +226,23 @@ expect "identical foods collapse to one result" \
 # ...but two foods that merely share a name are different things, and both stay.
 curl -fsS -X POST "$BASE/foods" -H "$OAUTH" -H 'content-type: application/json' \
   -d "{\"name\":\"$PROBE\",\"calories_kcal\":250,\"protein_g\":9,\"carbs_g\":30,\"fat_g\":8,\"serving_size_g\":100}" >/dev/null
+# A custom food — created the same way from the Foods page and from inside the
+# meal-logging picker — has to be searchable and loggable straight away.
+# A date of its own, so this does not disturb the diary totals asserted above.
+CUSTOM_NAME="Homemade granola bar $(date +%s)-$RANDOM"
+CUSTOM=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"$CUSTOM_NAME\",\"calories_kcal\":471,\"protein_g\":9.1,\"carbs_g\":64,\"fat_g\":19,\"serving_size_g\":45}" | j "['id']")
+CUSTOM_Q=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$CUSTOM_NAME")
+
+# Count the food itself, not tier events: a near-identical name from an earlier
+# run can legitimately surface in the fuzzy tier alongside it.
+expect "a newly created food is searchable at once" \
+  "$(sse "$CUSTOM_Q" | grep -o "\"name\":\"$CUSTOM_NAME\"" | wc -l | tr -d ' ')" "1"
+expect "and is loggable immediately" \
+  "$(curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+      -d "{\"logged_on\":\"2026-02-20\",\"meal\":\"snack\",\"food_id\":\"$CUSTOM\",\"quantity_g\":90}" \
+      | j "['nutrients']['calories_kcal']")" "423.9"
+
 expect "a nutritionally different namesake is kept" \
   "$(sse "$PROBE_Q" | grep -o "\"name\":\"$PROBE\"" | wc -l | tr -d ' ')" "2"
 expect "the stream always ends with done"     "$(sse 'oats' | grep -c 'event: done')"               "1"

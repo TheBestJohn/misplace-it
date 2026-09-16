@@ -16,6 +16,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Calorie & macro diary** | Log foods by weight or recipes by serving, grouped into breakfast/lunch/dinner/snack, with progress against your daily targets |
 | **Recipes** | Build from any food in your library; totals and per-serving macros are computed for you and recalculate live as you edit |
 | **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Only a food's author can edit it |
+| **Add a food anywhere** | Create one from the Foods page, or inline while logging a meal or building a recipe — a search that found nothing offers to create what you typed |
 | **Instant search** | Streams results over SSE as you type, tier by tier, and tolerates typos — "chikn brest" finds chicken breast |
 | **Recipe sharing** | Private by default; mark one public and everyone can read and log it, while only you can change it |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |

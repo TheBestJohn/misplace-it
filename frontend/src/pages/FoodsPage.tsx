@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
-import type { FoodInput } from '@/api/endpoints'
 import type { ExternalFood, Food } from '@/api/types'
 import { useAuth } from '@/lib/auth'
 import { grams, kcal, round, sourceLabel } from '@/lib/format'
@@ -15,7 +14,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -24,6 +22,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Empty, ErrorNote, SourceBadge, Spinner } from '@/components/shared'
+import FoodForm from '@/components/FoodForm'
 
 export default function FoodsPage() {
   const { user } = useAuth()
@@ -268,174 +267,21 @@ export default function FoodsPage() {
 
       <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editing === 'new' ? 'New custom food' : 'Edit food'}</DialogTitle>
+            <DialogDescription>
+              Visible to everyone once saved. Only you can edit it.
+            </DialogDescription>
+          </DialogHeader>
           {editing && (
-            <FoodForm food={editing === 'new' ? null : editing} onDone={() => setEditing(null)} />
+            <FoodForm
+              food={editing === 'new' ? null : editing}
+              onSaved={() => setEditing(null)}
+              onCancel={() => setEditing(null)}
+            />
           )}
         </DialogContent>
       </Dialog>
     </div>
-  )
-}
-
-const EMPTY: FoodInput = {
-  name: '',
-  brand: '',
-  upc: '',
-  calories_kcal: 0,
-  protein_g: 0,
-  carbs_g: 0,
-  fat_g: 0,
-  fiber_g: null,
-  sugar_g: null,
-  saturated_fat_g: null,
-  sodium_mg: null,
-  serving_size_g: 100,
-  serving_label: '',
-}
-
-function FoodForm({ food, onDone }: { food: Food | null; onDone: () => void }) {
-  const queryClient = useQueryClient()
-  const [form, setForm] = useState<FoodInput>(
-    food
-      ? {
-          name: food.name,
-          brand: food.brand ?? '',
-          upc: food.upc ?? '',
-          calories_kcal: food.calories_kcal,
-          protein_g: food.protein_g,
-          carbs_g: food.carbs_g,
-          fat_g: food.fat_g,
-          fiber_g: food.fiber_g,
-          sugar_g: food.sugar_g,
-          saturated_fat_g: food.saturated_fat_g,
-          sodium_mg: food.sodium_mg,
-          serving_size_g: food.serving_size_g,
-          serving_label: food.serving_label ?? '',
-        }
-      : EMPTY,
-  )
-
-  const save = useMutation({
-    mutationFn: () => {
-      const payload: FoodInput = {
-        ...form,
-        brand: form.brand || null,
-        upc: form.upc || null,
-        serving_label: form.serving_label || null,
-      }
-      return food ? api.updateFood(food.id, payload) : api.createFood(payload)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['foods'] })
-      onDone()
-    },
-  })
-
-  const num = (key: keyof FoodInput) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((f) => ({ ...f, [key]: e.target.value === '' ? null : Number(e.target.value) }))
-
-  const NumField = ({
-    id,
-    label,
-    field,
-    required,
-  }: {
-    id: string
-    label: string
-    field: keyof FoodInput
-    required?: boolean
-  }) => (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        type="number"
-        step="any"
-        min={0}
-        required={required}
-        value={(form[field] as number | null) ?? ''}
-        onChange={num(field)}
-      />
-    </div>
-  )
-
-  return (
-    <>
-      <DialogHeader>
-        <DialogTitle>{food ? 'Edit food' : 'New custom food'}</DialogTitle>
-        <DialogDescription>
-          Nutrients are per 100 g. This food is visible to everyone once saved.
-        </DialogDescription>
-      </DialogHeader>
-
-      <form
-        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
-        onSubmit={(e) => {
-          e.preventDefault()
-          save.mutate()
-        }}
-      >
-        <div className="space-y-1.5 sm:col-span-2 lg:col-span-4">
-          <Label htmlFor="f-name">Name</Label>
-          <Input
-            id="f-name"
-            required
-            autoFocus
-            value={form.name}
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          />
-        </div>
-        <div className="space-y-1.5 sm:col-span-1 lg:col-span-2">
-          <Label htmlFor="f-brand">Brand</Label>
-          <Input
-            id="f-brand"
-            value={form.brand ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))}
-          />
-        </div>
-        <div className="space-y-1.5 sm:col-span-1 lg:col-span-2">
-          <Label htmlFor="f-upc">UPC</Label>
-          <Input
-            id="f-upc"
-            inputMode="numeric"
-            value={form.upc ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, upc: e.target.value }))}
-          />
-        </div>
-
-        <NumField id="f-kcal" label="Calories (kcal)" field="calories_kcal" required />
-        <NumField id="f-p" label="Protein (g)" field="protein_g" required />
-        <NumField id="f-c" label="Carbs (g)" field="carbs_g" required />
-        <NumField id="f-f" label="Fat (g)" field="fat_g" required />
-        <NumField id="f-fib" label="Fiber (g)" field="fiber_g" />
-        <NumField id="f-sug" label="Sugar (g)" field="sugar_g" />
-        <NumField id="f-sat" label="Saturated fat (g)" field="saturated_fat_g" />
-        <NumField id="f-na" label="Sodium (mg)" field="sodium_mg" />
-
-        <NumField id="f-serv" label="Serving size (g)" field="serving_size_g" required />
-        <div className="space-y-1.5 sm:col-span-1 lg:col-span-3">
-          <Label htmlFor="f-servlabel">Serving label</Label>
-          <Input
-            id="f-servlabel"
-            placeholder="e.g. 1 cup"
-            value={form.serving_label ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, serving_label: e.target.value }))}
-          />
-        </div>
-
-        <div className="sm:col-span-2 lg:col-span-4">
-          <ErrorNote error={save.error} />
-        </div>
-
-        <DialogFooter className="sm:col-span-2 lg:col-span-4">
-          <Button type="button" variant="ghost" onClick={onDone}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={save.isPending}>
-            {save.isPending ? 'Saving…' : 'Save'}
-          </Button>
-        </DialogFooter>
-      </form>
-    </>
   )
 }

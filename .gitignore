@@ -6,6 +6,9 @@
 node_modules/
 /frontend/dist/
 /frontend/.vite/
+# TypeScript incremental build state: a machine-local artifact that changes on
+# every build and was committed by mistake.
+*.tsbuildinfo
 
 # Env / secrets
 .env
