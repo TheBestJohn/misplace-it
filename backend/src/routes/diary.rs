@@ -1,0 +1,487 @@
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::{Json, Router};
+use chrono::{Duration, NaiveDate, Utc};
+use serde::Deserialize;
+use utoipa::IntoParams;
+use uuid::Uuid;
+use validator::Validate;
+
+use crate::auth::CurrentUser;
+use crate::domain::diary::{
+    CreateDiaryEntryRequest, DailyTotal, DiaryDay, DiaryEntry, DiaryRow, DiarySummary, DayTargets,
+    MealGroup, PatchDiaryEntryRequest,
+};
+use crate::domain::nutrients::Nutrients;
+use crate::error::{ApiError, ApiResult};
+use crate::state::AppState;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list).post(create))
+        .route("/day", get(day))
+        .route("/summary", get(summary))
+        .route("/{id}", get(get_one).patch(patch).delete(delete))
+}
+
+const MEALS: [&str; 4] = ["breakfast", "lunch", "dinner", "snack"];
+
+/// Selects one diary entry plus the nutrient basis needed to scale it:
+///   * food entries  -> the food's per-100g figures
+///   * recipe entries-> the recipe's per-ONE-SERVING figures, aggregated in the
+///     lateral join, so both cases reduce to a single multiply in Rust.
+const ENTRY_SELECT: &str = r#"
+    SELECT d.id, d.logged_on, d.meal, d.food_id, d.recipe_id, d.quantity_g, d.recipe_servings,
+           d.created_at, d.updated_at,
+           f.name AS food_name, f.brand AS food_brand, r.name AS recipe_name,
+           COALESCE(f.calories_kcal,   rt.calories_kcal)   AS calories_kcal,
+           COALESCE(f.protein_g,       rt.protein_g)       AS protein_g,
+           COALESCE(f.carbs_g,         rt.carbs_g)         AS carbs_g,
+           COALESCE(f.fat_g,           rt.fat_g)           AS fat_g,
+           COALESCE(f.fiber_g,         rt.fiber_g)         AS fiber_g,
+           COALESCE(f.sugar_g,         rt.sugar_g)         AS sugar_g,
+           COALESCE(f.saturated_fat_g, rt.saturated_fat_g) AS saturated_fat_g,
+           COALESCE(f.sodium_mg,       rt.sodium_mg)       AS sodium_mg
+    FROM diary_entries d
+    LEFT JOIN foods f   ON f.id = d.food_id
+    LEFT JOIN recipes r ON r.id = d.recipe_id
+    LEFT JOIN LATERAL (
+        SELECT sum(fi.calories_kcal * ri.quantity_g / 100.0) / r.servings AS calories_kcal,
+               sum(fi.protein_g     * ri.quantity_g / 100.0) / r.servings AS protein_g,
+               sum(fi.carbs_g       * ri.quantity_g / 100.0) / r.servings AS carbs_g,
+               sum(fi.fat_g         * ri.quantity_g / 100.0) / r.servings AS fat_g,
+               sum(COALESCE(fi.fiber_g, 0)         * ri.quantity_g / 100.0) / r.servings AS fiber_g,
+               sum(COALESCE(fi.sugar_g, 0)         * ri.quantity_g / 100.0) / r.servings AS sugar_g,
+               sum(COALESCE(fi.saturated_fat_g, 0) * ri.quantity_g / 100.0) / r.servings AS saturated_fat_g,
+               sum(COALESCE(fi.sodium_mg, 0)       * ri.quantity_g / 100.0) / r.servings AS sodium_mg
+        FROM recipe_items ri
+        JOIN foods fi ON fi.id = ri.food_id
+        WHERE ri.recipe_id = d.recipe_id
+    ) rt ON d.recipe_id IS NOT NULL
+"#;
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(default)]
+pub struct ListQuery {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+    pub meal: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(default)]
+pub struct DayQuery {
+    /// Defaults to today.
+    pub date: Option<NaiveDate>,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[serde(default)]
+pub struct SummaryQuery {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/diary", tag = "diary",
+    security(("bearer" = [])),
+    params(ListQuery),
+    responses((status = 200, body = Vec<DiaryEntry>))
+)]
+pub async fn list(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<ListQuery>,
+) -> ApiResult<Json<Vec<DiaryEntry>>> {
+    let rows: Vec<DiaryRow> = sqlx::query_as(&format!(
+        "{ENTRY_SELECT}
+         WHERE d.user_id = $1
+           AND ($2::date IS NULL OR d.logged_on >= $2)
+           AND ($3::date IS NULL OR d.logged_on <= $3)
+           AND ($4::text IS NULL OR d.meal = $4)
+         ORDER BY d.logged_on DESC, d.created_at ASC"
+    ))
+    .bind(user.id)
+    .bind(q.from)
+    .bind(q.to)
+    .bind(q.meal.as_deref())
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/diary/day", tag = "diary",
+    security(("bearer" = [])),
+    params(DayQuery),
+    responses((status = 200, description = "One day, grouped by meal, with targets", body = DiaryDay))
+)]
+pub async fn day(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<DayQuery>,
+) -> ApiResult<Json<DiaryDay>> {
+    let date = q.date.unwrap_or_else(|| Utc::now().date_naive());
+
+    let rows: Vec<DiaryRow> = sqlx::query_as(&format!(
+        "{ENTRY_SELECT}
+         WHERE d.user_id = $1 AND d.logged_on = $2
+         ORDER BY d.created_at ASC"
+    ))
+    .bind(user.id)
+    .bind(date)
+    .fetch_all(&state.db)
+    .await?;
+
+    let entries: Vec<DiaryEntry> = rows.into_iter().map(Into::into).collect();
+    let total: Nutrients = entries.iter().map(|e| e.nutrients).sum();
+
+    // Group into the canonical meal order, then append any custom meal names
+    // the user has invented so nothing is silently dropped.
+    let mut meal_names: Vec<String> = MEALS.iter().map(|m| m.to_string()).collect();
+    for e in &entries {
+        if !meal_names.contains(&e.meal) {
+            meal_names.push(e.meal.clone());
+        }
+    }
+
+    let meals: Vec<MealGroup> = meal_names
+        .into_iter()
+        .map(|meal| {
+            let group: Vec<DiaryEntry> = entries
+                .iter()
+                .filter(|e| e.meal == meal)
+                .cloned()
+                .collect();
+            let total: Nutrients = group.iter().map(|e| e.nutrients).sum();
+            MealGroup {
+                meal,
+                entries: group,
+                total: total.rounded(),
+            }
+        })
+        .collect();
+
+    let targets: (Option<f64>, Option<f64>, Option<f64>, Option<f64>) = sqlx::query_as(
+        "SELECT daily_calorie_target, daily_protein_target_g, daily_carbs_target_g,
+                daily_fat_target_g
+         FROM users WHERE id = $1",
+    )
+    .bind(user.id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound("user"))?;
+
+    let total = total.rounded();
+    Ok(Json(DiaryDay {
+        date,
+        meals,
+        remaining_kcal: targets.0.map(|t| round2(t - total.calories_kcal)),
+        total,
+        targets: DayTargets {
+            calories_kcal: targets.0,
+            protein_g: targets.1,
+            carbs_g: targets.2,
+            fat_g: targets.3,
+        },
+    }))
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/diary/summary", tag = "diary",
+    security(("bearer" = [])),
+    params(SummaryQuery),
+    responses((status = 200, description = "Per-day totals over a range", body = DiarySummary))
+)]
+pub async fn summary(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Query(q): Query<SummaryQuery>,
+) -> ApiResult<Json<DiarySummary>> {
+    let to = q.to.unwrap_or_else(|| Utc::now().date_naive());
+    let from = q.from.unwrap_or(to - Duration::days(29));
+    if from > to {
+        return Err(ApiError::bad_request("from must not be after to"));
+    }
+
+    // Roll the per-entry scaling and the per-day sum into one query so a year
+    // of history is a single round trip.
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        logged_on: NaiveDate,
+        entry_count: i64,
+        calories_kcal: f64,
+        protein_g: f64,
+        carbs_g: f64,
+        fat_g: f64,
+        fiber_g: f64,
+        sugar_g: f64,
+        saturated_fat_g: f64,
+        sodium_mg: f64,
+    }
+
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        r#"
+        WITH entries AS (
+            {ENTRY_SELECT}
+            WHERE d.user_id = $1 AND d.logged_on BETWEEN $2 AND $3
+        ), scaled AS (
+            SELECT logged_on,
+                   COALESCE(quantity_g / 100.0, recipe_servings, 0) AS factor,
+                   COALESCE(calories_kcal, 0)   AS calories_kcal,
+                   COALESCE(protein_g, 0)       AS protein_g,
+                   COALESCE(carbs_g, 0)         AS carbs_g,
+                   COALESCE(fat_g, 0)           AS fat_g,
+                   COALESCE(fiber_g, 0)         AS fiber_g,
+                   COALESCE(sugar_g, 0)         AS sugar_g,
+                   COALESCE(saturated_fat_g, 0) AS saturated_fat_g,
+                   COALESCE(sodium_mg, 0)       AS sodium_mg
+            FROM entries
+        )
+        SELECT logged_on,
+               count(*)                          AS entry_count,
+               sum(calories_kcal   * factor)     AS calories_kcal,
+               sum(protein_g       * factor)     AS protein_g,
+               sum(carbs_g         * factor)     AS carbs_g,
+               sum(fat_g           * factor)     AS fat_g,
+               sum(fiber_g         * factor)     AS fiber_g,
+               sum(sugar_g         * factor)     AS sugar_g,
+               sum(saturated_fat_g * factor)     AS saturated_fat_g,
+               sum(sodium_mg       * factor)     AS sodium_mg
+        FROM scaled
+        GROUP BY logged_on
+        ORDER BY logged_on ASC
+        "#
+    ))
+    .bind(user.id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&state.db)
+    .await?;
+
+    let days: Vec<DailyTotal> = rows
+        .into_iter()
+        .map(|r| DailyTotal {
+            date: r.logged_on,
+            entry_count: r.entry_count,
+            total: Nutrients {
+                calories_kcal: r.calories_kcal,
+                protein_g: r.protein_g,
+                carbs_g: r.carbs_g,
+                fat_g: r.fat_g,
+                fiber_g: r.fiber_g,
+                sugar_g: r.sugar_g,
+                saturated_fat_g: r.saturated_fat_g,
+                sodium_mg: r.sodium_mg,
+            }
+            .rounded(),
+        })
+        .collect();
+
+    let logged_day_count = days.len() as i64;
+    // Average over logged days only: days with nothing recorded are missing
+    // data, not zero-calorie days, and averaging them in would mislead.
+    let average = if logged_day_count == 0 {
+        Nutrients::default()
+    } else {
+        days.iter()
+            .map(|d| d.total)
+            .sum::<Nutrients>()
+            .scaled(1.0 / logged_day_count as f64)
+            .rounded()
+    };
+
+    Ok(Json(DiarySummary {
+        from,
+        to,
+        days,
+        average,
+        logged_day_count,
+    }))
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/diary/{id}", tag = "diary",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Diary entry id")),
+    responses((status = 200, body = DiaryEntry), (status = 404, body = crate::error::ErrorBody))
+)]
+pub async fn get_one(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<DiaryEntry>> {
+    Ok(Json(load_entry(&state, user.id, id).await?))
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/diary", tag = "diary",
+    security(("bearer" = [])),
+    request_body = CreateDiaryEntryRequest,
+    responses((status = 201, body = DiaryEntry), (status = 400, body = crate::error::ErrorBody))
+)]
+pub async fn create(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Json(body): Json<CreateDiaryEntryRequest>,
+) -> ApiResult<(StatusCode, Json<DiaryEntry>)> {
+    body.validate()?;
+
+    let date = body.logged_on.unwrap_or_else(|| Utc::now().date_naive());
+    let meal = normalize_meal(body.meal.as_deref());
+
+    // Reject the ambiguous combinations here rather than letting the database
+    // CHECK constraint surface as an opaque error.
+    let id: Uuid = match (body.food_id, body.recipe_id) {
+        (Some(food_id), None) => {
+            let grams = body
+                .quantity_g
+                .ok_or_else(|| ApiError::bad_request("quantity_g is required when logging a food"))?;
+
+            // Ownership/visibility check before insert.
+            super::foods::load_food(&state, user.id, food_id).await?;
+
+            sqlx::query_scalar(
+                "INSERT INTO diary_entries (user_id, logged_on, meal, food_id, quantity_g)
+                 VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            )
+            .bind(user.id)
+            .bind(date)
+            .bind(&meal)
+            .bind(food_id)
+            .bind(grams)
+            .fetch_one(&state.db)
+            .await?
+        }
+        (None, Some(recipe_id)) => {
+            let servings = body.recipe_servings.unwrap_or(1.0);
+
+            let owned: Option<(Uuid,)> =
+                sqlx::query_as("SELECT id FROM recipes WHERE id = $1 AND user_id = $2")
+                    .bind(recipe_id)
+                    .bind(user.id)
+                    .fetch_optional(&state.db)
+                    .await?;
+            if owned.is_none() {
+                return Err(ApiError::NotFound("recipe"));
+            }
+
+            sqlx::query_scalar(
+                "INSERT INTO diary_entries (user_id, logged_on, meal, recipe_id, recipe_servings)
+                 VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            )
+            .bind(user.id)
+            .bind(date)
+            .bind(&meal)
+            .bind(recipe_id)
+            .bind(servings)
+            .fetch_one(&state.db)
+            .await?
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "provide exactly one of food_id or recipe_id",
+            ))
+        }
+    };
+
+    Ok((
+        StatusCode::CREATED,
+        Json(load_entry(&state, user.id, id).await?),
+    ))
+}
+
+#[utoipa::path(
+    patch, path = "/api/v1/diary/{id}", tag = "diary",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Diary entry id")),
+    request_body = PatchDiaryEntryRequest,
+    responses((status = 200, body = DiaryEntry), (status = 404, body = crate::error::ErrorBody))
+)]
+pub async fn patch(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PatchDiaryEntryRequest>,
+) -> ApiResult<Json<DiaryEntry>> {
+    body.validate()?;
+
+    let meal = body.meal.as_deref().map(|m| normalize_meal(Some(m)));
+
+    // Quantity fields are only applied to the matching entry kind, so a
+    // `quantity_g` sent for a recipe entry cannot break the XOR constraint.
+    let result = sqlx::query(
+        "UPDATE diary_entries SET
+            logged_on = COALESCE($3, logged_on),
+            meal = COALESCE($4, meal),
+            quantity_g = CASE WHEN food_id IS NOT NULL
+                              THEN COALESCE($5, quantity_g) ELSE quantity_g END,
+            recipe_servings = CASE WHEN recipe_id IS NOT NULL
+                              THEN COALESCE($6, recipe_servings) ELSE recipe_servings END,
+            updated_at = now()
+         WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(body.logged_on)
+    .bind(meal)
+    .bind(body.quantity_g)
+    .bind(body.recipe_servings)
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("diary entry"));
+    }
+
+    Ok(Json(load_entry(&state, user.id, id).await?))
+}
+
+#[utoipa::path(
+    delete, path = "/api/v1/diary/{id}", tag = "diary",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Diary entry id")),
+    responses((status = 204, description = "Deleted"), (status = 404, body = crate::error::ErrorBody))
+)]
+pub async fn delete(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    let result = sqlx::query("DELETE FROM diary_entries WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user.id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("diary entry"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn load_entry(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<DiaryEntry> {
+    let row: DiaryRow = sqlx::query_as(&format!(
+        "{ENTRY_SELECT} WHERE d.user_id = $1 AND d.id = $2"
+    ))
+    .bind(user_id)
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound("diary entry"))?;
+
+    Ok(row.into())
+}
+
+fn normalize_meal(meal: Option<&str>) -> String {
+    meal.map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(|m| m.to_lowercase())
+        .unwrap_or_else(|| "snack".to_string())
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}

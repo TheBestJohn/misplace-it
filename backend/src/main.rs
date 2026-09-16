@@ -1,0 +1,136 @@
+mod auth;
+mod config;
+mod domain;
+mod error;
+mod openapi;
+mod routes;
+mod services;
+mod state;
+
+use std::time::Duration;
+
+use axum::http::{header, HeaderValue, Method};
+use axum::routing::get;
+use axum::{Json, Router};
+use sqlx::postgres::PgPoolOptions;
+use tower_http::compression::CompressionLayer;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+
+use crate::config::Config;
+use crate::state::AppState;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "misplace_it=info,tower_http=info,sqlx=warn".into()),
+        )
+        .init();
+
+    let config = Config::from_env()?;
+
+    let db = PgPoolOptions::new()
+        .max_connections(10)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(&config.database_url)
+        .await?;
+
+    // Migrations are embedded in the binary and run at startup, so a fresh
+    // container comes up with a correct schema without a separate deploy step.
+    sqlx::migrate!("./migrations").run(&db).await?;
+    tracing::info!("migrations applied");
+
+    let http = reqwest::Client::builder()
+        // Open Food Facts asks API clients to identify themselves.
+        .user_agent(concat!(
+            "misplace-it/",
+            env!("CARGO_PKG_VERSION"),
+            " (nutrition tracker)"
+        ))
+        .timeout(Duration::from_secs(15))
+        .build()?;
+
+    let bind_addr = config.bind_addr.clone();
+    let cors = build_cors(&config);
+    let state = AppState::new(db, config, http);
+
+    let app = Router::new()
+        .nest("/api/v1", routes::api_router())
+        .route(
+            "/api/v1/openapi.json",
+            get(|| async { Json(openapi::ApiDoc::openapi()) }),
+        )
+        .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
+        .layer(cors)
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    tracing::info!(%bind_addr, "listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    Ok(())
+}
+
+/// In production the SPA is served from the same origin by nginx, so CORS is
+/// only needed for local development (`vite` on :5173). An explicit origin list
+/// keeps credentials-bearing requests from arbitrary origins out.
+fn build_cors(config: &Config) -> CorsLayer {
+    let base = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .max_age(Duration::from_secs(3600));
+
+    if config.cors_origins.is_empty() {
+        return base.allow_origin(Any);
+    }
+
+    let origins: Vec<HeaderValue> = config
+        .cors_origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+
+    base.allow_origin(origins)
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received");
+}

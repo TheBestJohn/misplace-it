@@ -1,0 +1,112 @@
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
+
+/// The OpenAPI document is generated from the same `#[utoipa::path]` attributes
+/// that sit on the handlers, so the spec cannot drift from the implementation
+/// the way a hand-maintained YAML file does.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "misplace-it API",
+        version = "0.1.0",
+        description = "Weight, macro, calorie, recipe and food-database tracking."
+    ),
+    servers((url = "/api/v1", description = "Versioned API root")),
+    paths(
+        crate::routes::health,
+        crate::routes::auth::register,
+        crate::routes::auth::login,
+        crate::routes::auth::me,
+        crate::routes::profile::get_profile,
+        crate::routes::profile::update_profile,
+        crate::routes::weights::list,
+        crate::routes::weights::upsert,
+        crate::routes::weights::get_one,
+        crate::routes::weights::patch,
+        crate::routes::weights::delete,
+        crate::routes::weights::stats,
+        crate::routes::foods::list,
+        crate::routes::foods::get_one,
+        crate::routes::foods::create,
+        crate::routes::foods::update,
+        crate::routes::foods::delete,
+        crate::routes::foods::search_external,
+        crate::routes::foods::barcode,
+        crate::routes::foods::external_detail,
+        crate::routes::foods::import,
+        crate::routes::recipes::list,
+        crate::routes::recipes::get_one,
+        crate::routes::recipes::create,
+        crate::routes::recipes::update,
+        crate::routes::recipes::delete,
+        crate::routes::diary::list,
+        crate::routes::diary::day,
+        crate::routes::diary::summary,
+        crate::routes::diary::get_one,
+        crate::routes::diary::create,
+        crate::routes::diary::patch,
+        crate::routes::diary::delete,
+    ),
+    components(schemas(
+        crate::routes::Health,
+        crate::error::ErrorBody,
+        crate::domain::nutrients::Nutrients,
+        crate::domain::user::Profile,
+        crate::domain::user::RegisterRequest,
+        crate::domain::user::LoginRequest,
+        crate::domain::user::AuthResponse,
+        crate::domain::user::UpdateProfileRequest,
+        crate::domain::weight::WeightEntry,
+        crate::domain::weight::UpsertWeightRequest,
+        crate::domain::weight::PatchWeightRequest,
+        crate::domain::weight::WeightStats,
+        crate::domain::food::Food,
+        crate::domain::food::FoodDetail,
+        crate::domain::food::UpsertFoodRequest,
+        crate::domain::food::ExternalFood,
+        crate::domain::food::ExternalSearchResponse,
+        crate::domain::food::BarcodeLookup,
+        crate::domain::recipe::Recipe,
+        crate::domain::recipe::RecipeSummary,
+        crate::domain::recipe::RecipeItem,
+        crate::domain::recipe::RecipeItemInput,
+        crate::domain::recipe::UpsertRecipeRequest,
+        crate::domain::diary::DiaryEntry,
+        crate::domain::diary::DiaryDay,
+        crate::domain::diary::DayTargets,
+        crate::domain::diary::MealGroup,
+        crate::domain::diary::DailyTotal,
+        crate::domain::diary::DiarySummary,
+        crate::domain::diary::CreateDiaryEntryRequest,
+        crate::domain::diary::PatchDiaryEntryRequest,
+    )),
+    modifiers(&BearerAuth),
+    tags(
+        (name = "meta", description = "Service health and spec"),
+        (name = "auth", description = "Registration and sign-in"),
+        (name = "profile", description = "Profile and daily targets"),
+        (name = "weights", description = "Weight and body-fat tracking"),
+        (name = "foods", description = "Food database, USDA/Open Food Facts lookup, barcodes"),
+        (name = "recipes", description = "Recipes and computed macros"),
+        (name = "diary", description = "Calorie and macro logging"),
+    )
+)]
+pub struct ApiDoc;
+
+struct BearerAuth;
+
+impl Modify for BearerAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "bearer",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            );
+        }
+    }
+}

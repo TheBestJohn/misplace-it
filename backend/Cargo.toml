@@ -1,0 +1,45 @@
+[package]
+name = "misplace-it"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Nutrition, macro, recipe and weight tracking API"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
+
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "postgres",
+  "uuid",
+  "chrono",
+  "macros",
+  "migrate",
+] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["rand_core"] }
+jsonwebtoken = "9"
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+validator = { version = "0.19", features = ["derive"] }
+
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+
+[dev-dependencies]
