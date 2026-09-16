@@ -1,4 +1,4 @@
--- Core schema for misplace-it.
+-- Core schema for nom-inal.
 --
 -- Nutrient design note: every food stores its nutrients on a canonical
 -- "per 100 g" basis. Both of the external sources we import from (USDA

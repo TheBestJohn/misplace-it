@@ -242,7 +242,7 @@ mod tests {
     /// would pass in a root container and prove nothing.
     #[tokio::test]
     async fn ensure_ready_fails_when_the_root_cannot_be_used() {
-        let file = std::env::temp_dir().join(format!("misplace-probe-{}", uuid::Uuid::new_v4()));
+        let file = std::env::temp_dir().join(format!("nom-inal-probe-{}", uuid::Uuid::new_v4()));
         tokio::fs::write(&file, b"not a directory").await.unwrap();
 
         let store = PhotoStore::new(file.join("photos"), 1024);
@@ -256,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_ready_creates_a_usable_root() {
-        let dir = std::env::temp_dir().join(format!("misplace-ok-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("nom-inal-ok-{}", uuid::Uuid::new_v4()));
         let store = PhotoStore::new(&dir, 1024);
 
         store.ensure_ready().await.expect("should create the root");
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn paths_cannot_escape_the_storage_root() {
-        let store = PhotoStore::new("/var/lib/misplace-it/photos", 1024);
+        let store = PhotoStore::new("/var/lib/nom-inal/photos", 1024);
         assert!(store.resolve("../../etc/passwd").is_err());
         assert!(store.resolve("/etc/passwd").is_err());
         assert!(store.resolve("user/2026-03/photo.jpg").is_ok());

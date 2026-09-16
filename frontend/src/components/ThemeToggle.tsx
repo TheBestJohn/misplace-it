@@ -4,7 +4,7 @@ import { Moon, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 type Theme = 'light' | 'dark'
-const KEY = 'misplace-it.theme'
+const KEY = 'nom-inal.theme'
 
 /**
  * Read the theme the boot script in index.html already applied, rather than

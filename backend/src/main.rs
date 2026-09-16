@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "misplace_it=info,tower_http=info,sqlx=warn".into()),
+                .unwrap_or_else(|_| "nom_inal=info,tower_http=info,sqlx=warn".into()),
         )
         .init();
 
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     let http = reqwest::Client::builder()
         // Open Food Facts asks API clients to identify themselves.
         .user_agent(concat!(
-            "misplace-it/",
+            "nom-inal/",
             env!("CARGO_PKG_VERSION"),
             " (nutrition tracker)"
         ))

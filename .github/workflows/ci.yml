@@ -47,7 +47,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: misplaceit
+          POSTGRES_DB: nominal
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
@@ -65,12 +65,12 @@ jobs:
       - name: Run migrations and exercise every endpoint
         working-directory: backend
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/misplaceit
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/nominal
           JWT_SECRET: ci-secret-not-used-anywhere-real
           BIND_ADDR: 127.0.0.1:8080
         run: |
           cargo build
-          ./target/debug/misplace-it &
+          ./target/debug/nom-inal &
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8080/api/v1/health && break
             sleep 1

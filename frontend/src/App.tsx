@@ -51,7 +51,7 @@ export default function App() {
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-3 px-4">
           <div className="flex items-center gap-2 font-semibold tracking-tight">
             <span aria-hidden="true">🥗</span>
-            <span>misplace-it</span>
+            <span>nom-inal</span>
           </div>
           <div className="flex items-center gap-1">
             <span className="text-muted-foreground mr-2 hidden text-sm sm:inline">

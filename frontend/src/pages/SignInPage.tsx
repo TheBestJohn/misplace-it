@@ -44,7 +44,7 @@ export default function SignInPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-xl">
-            <span aria-hidden="true">🥗</span> misplace-it
+            <span aria-hidden="true">🥗</span> nom-inal
           </CardTitle>
           <CardDescription>Weight, calories, macros and recipes — self-hosted.</CardDescription>
           <CardAction>

@@ -1,4 +1,4 @@
-const TOKEN_KEY = 'misplace-it.token'
+const TOKEN_KEY = 'nom-inal.token'
 
 export const tokenStore = {
   get: () => localStorage.getItem(TOKEN_KEY),
@@ -20,7 +20,7 @@ export class ApiError extends Error {
 }
 
 /** Fired when the server rejects our token, so the app can sign the user out. */
-export const UNAUTHORIZED_EVENT = 'misplace-it:unauthorized'
+export const UNAUTHORIZED_EVENT = 'nom-inal:unauthorized'
 
 const BASE = '/api/v1'
 

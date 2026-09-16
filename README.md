@@ -1,4 +1,4 @@
-# misplace-it
+# nom-inal
 
 Self-hosted nutrition tracking: weight, calories, macros, recipes, and a food
 database that looks foods up from government and open data sources — including
@@ -45,8 +45,8 @@ search returns what the other found plus a note saying which was unavailable.
 ## Quick start
 
 ```bash
-git clone https://github.com/TheBestJohn/misplace-it.git
-cd misplace-it
+git clone https://github.com/TheBestJohn/nom-inal.git
+cd nom-inal
 
 cp .env.example .env
 # Required: set POSTGRES_PASSWORD and JWT_SECRET.
@@ -79,8 +79,8 @@ Two things to keep: the database, and the photo volume.
 
 ```bash
 # database
-docker compose exec -T db pg_dump -U misplaceit misplaceit | gzip > backup.sql.gz
-gunzip -c backup.sql.gz | docker compose exec -T db psql -U misplaceit misplaceit
+docker compose exec -T db pg_dump -U nominal nominal | gzip > backup.sql.gz
+gunzip -c backup.sql.gz | docker compose exec -T db psql -U nominal nominal
 
 # photos
 docker compose cp api:/data/photos ./photo-backup
@@ -108,14 +108,14 @@ Set in `.env` (see `.env.example`).
 |---|---|---|
 | `POSTGRES_PASSWORD` | — | **Required.** |
 | `JWT_SECRET` | — | **Required.** Anyone holding this can mint a token for any account. |
-| `POSTGRES_USER` / `POSTGRES_DB` | `misplaceit` | |
+| `POSTGRES_USER` / `POSTGRES_DB` | `nominal` | |
 | `WEB_PORT` | `8088` | Host port for the UI. |
 | `JWT_TTL_HOURS` | `168` | Session length. |
 | `USDA_API_KEY` | _empty_ | Enables USDA search. |
 | `ALLOW_REGISTRATION` | `true` | Set `false` to close sign-ups. |
 | `MAX_UPLOAD_MB` | `15` | Largest accepted photo, before downscaling. |
 | `TRGM_WORD_THRESHOLD` | `0.4` | Fuzzy-search strictness, 0–1. Lower matches more typos and more noise. |
-| `RUST_LOG` | `misplace_it=info,…` | `tracing-subscriber` filter. |
+| `RUST_LOG` | `nom_inal=info,…` | `tracing-subscriber` filter. |
 
 The API also reads `BIND_ADDR` and `CORS_ORIGINS`; both only matter outside
 Docker, where the SPA is served from a different origin than the API.
@@ -288,7 +288,7 @@ Requires Rust (stable), Node 22+, and a Postgres you can point at.
 
 ```bash
 # database
-createdb misplaceit
+createdb nominal
 
 # API — migrations run on startup
 cd backend

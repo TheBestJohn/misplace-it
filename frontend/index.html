@@ -6,14 +6,14 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="description" content="Track weight, calories, macros and recipes." />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥗</text></svg>" />
-    <title>misplace-it</title>
+    <title>nom-inal</title>
     <script>
       // Runs before first paint, so there is no flash of the wrong theme, and
       // so the signed-out page is themed too — the toggle only exists inside
       // the signed-in shell and cannot be what applies this.
       ;(function () {
         try {
-          var stored = localStorage.getItem('misplace-it.theme')
+          var stored = localStorage.getItem('nom-inal.theme')
           var dark = stored
             ? stored === 'dark'
             : window.matchMedia('(prefers-color-scheme: dark)').matches

@@ -7,7 +7,7 @@ use utoipa::{Modify, OpenApi};
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "misplace-it API",
+        title = "nom-inal API",
         version = "0.1.0",
         description = "Weight, macro, calorie, recipe and food-database tracking."
     ),

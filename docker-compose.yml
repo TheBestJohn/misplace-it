@@ -1,17 +1,21 @@
+# Pins the compose project name. Without it the name comes from the
+# directory, so container and volume names would keep the old one.
+name: nom-inal
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-misplaceit}
+      POSTGRES_USER: ${POSTGRES_USER:-nominal}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-misplaceit}
+      POSTGRES_DB: ${POSTGRES_DB:-nominal}
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
       # The API runs migrations on boot, so it must not start until Postgres is
       # genuinely accepting connections — not merely until the container exists.
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-misplaceit} -d ${POSTGRES_DB:-misplaceit}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nominal} -d ${POSTGRES_DB:-nominal}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -25,14 +29,14 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-misplaceit}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-misplaceit}
+      DATABASE_URL: postgres://${POSTGRES_USER:-nominal}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nominal}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       JWT_TTL_HOURS: ${JWT_TTL_HOURS:-168}
       USDA_API_KEY: ${USDA_API_KEY:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       PHOTO_DIR: /data/photos
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-15}
-      RUST_LOG: ${RUST_LOG:-misplace_it=info,tower_http=info,sqlx=warn}
+      RUST_LOG: ${RUST_LOG:-nom_inal=info,tower_http=info,sqlx=warn}
     volumes:
       # Photo bytes live on disk rather than in Postgres, so they need their
       # own volume — and their own line in your backup routine.

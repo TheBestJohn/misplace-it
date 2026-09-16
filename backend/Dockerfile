@@ -29,7 +29,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home app
 
-COPY --from=builder /build/target/release/misplace-it /usr/local/bin/misplace-it
+COPY --from=builder /build/target/release/nom-inal /usr/local/bin/nom-inal
 
 # Create the photo directory in the IMAGE, owned by the runtime user.
 #
@@ -53,4 +53,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
   CMD curl -fsS http://127.0.0.1:8080/api/v1/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/misplace-it"]
+ENTRYPOINT ["/usr/local/bin/nom-inal"]
