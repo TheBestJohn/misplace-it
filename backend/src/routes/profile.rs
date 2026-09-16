@@ -13,10 +13,7 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/", get(get_profile).patch(update_profile))
 }
 
-const USER_COLUMNS: &str = r#"
-    id, email, password_hash, display_name, sex, birth_date, height_cm,
-    activity_level, goal, target_weight_kg, created_at, updated_at
-"#;
+use crate::domain::user::USER_COLUMNS;
 
 #[utoipa::path(
     get, path = "/api/v1/profile", tag = "profile",

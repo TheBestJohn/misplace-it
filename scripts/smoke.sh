@@ -40,6 +40,18 @@ TOKEN=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/js
 AUTH="Authorization: Bearer $TOKEN"
 expect "registered and signed in" "$(curl -fsS "$BASE/auth/me" -H "$AUTH" | j "['email']")" "$EMAIL"
 
+# Verification needs people other than the author, so the run has three
+# accounts: the first owns the instance, the other two are ordinary users.
+EMAIL2="smoke2-$(date +%s)-$RANDOM@example.test"
+EMAIL3="smoke3-$(date +%s)-$RANDOM@example.test"
+REG2=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL2\",\"password\":\"$PASSWORD\",\"display_name\":\"Smoke Two\"}")
+REG3=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL3\",\"password\":\"$PASSWORD\",\"display_name\":\"Smoke Three\"}")
+AUTH2="Authorization: Bearer $(echo "$REG2" | j "['access_token']")"
+AUTH3="Authorization: Bearer $(echo "$REG3" | j "['access_token']")"
+UID2=$(echo "$REG2" | j "['user']['id']")
+
 status "reject duplicate email"  409 -X POST "$BASE/auth/register" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\",\"display_name\":\"Dup\"}"
 status "reject short password"   400 -X POST "$BASE/auth/register" -H 'content-type: application/json' -d '{"email":"short@example.test","password":"short","display_name":"S"}'
 status "reject wrong password"   401 -X POST "$BASE/auth/login"    -H 'content-type: application/json' -d "{\"email\":\"$EMAIL\",\"password\":\"definitely-wrong\"}"
@@ -99,7 +111,18 @@ BAN2=$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: appli
   -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118}' | j "['id']")
 expect "re-import is idempotent" "$BAN2" "$BAN"
 status "reject unknown import source" 400 -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' -d '{"source":"nope","source_id":"1","name":"x","calories_kcal":0,"protein_g":0,"carbs_g":0,"fat_g":0,"serving_size_g":100}'
-status "imported foods are read-only"  403 -X PUT "$BASE/foods/$BAN" -H "$AUTH" -H 'content-type: application/json' -d '{"name":"Tampered","calories_kcal":1,"protein_g":0,"carbs_g":0,"fat_g":0,"serving_size_g":100}'
+# An imported row is a copy of what a provider published, not scripture: the
+# person holding the package is often right and the database wrong. Correcting
+# one is allowed, and the correction is what stops the next refresh from
+# quietly putting the old value back.
+expect "an imported food can be corrected" \
+  "$(curl -fsS -X PUT "$BASE/foods/$BAN" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"name":"Bananas, raw (corrected)","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118,"edit_summary":"matches the loose-fruit entry"}' | j "['revision']")" \
+  "2"
+expect "and a re-import will not undo the correction" \
+  "$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118}' | j "['name']")" \
+  "Bananas, raw (corrected)"
 
 echo "== recipes"
 # 100g oats (379) + 300g milk (183) + 118g banana (105.02) = 667.02 over 2 servings
@@ -172,12 +195,16 @@ OTHER=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/js
   -d "{\"email\":\"$OTHER_EMAIL\",\"password\":\"$PASSWORD\",\"display_name\":\"Other\"}" | j "['access_token']")
 OAUTH="Authorization: Bearer $OTHER"
 
-# Foods are global: a food is a fact about a product, so everyone sees it...
+# Foods are global: a food is a fact about a product, so everyone sees it, and
+# everyone may correct it. What is not shared is the ability to make a
+# correction anonymous or permanent — see the provenance section below.
 expect "another account sees your custom food" \
   "$(curl -fsS "$BASE/foods?q=Rolled%20oats" -H "$OAUTH" | j "[0]['name']")" "Rolled oats"
-# ...but only its author may change it.
-status "another account cannot edit your food" 403 -X PUT "$BASE/foods/$OATS" -H "$OAUTH" \
-  -H 'content-type: application/json' -d '{"name":"Hijacked","calories_kcal":1,"protein_g":0,"carbs_g":0,"fat_g":0,"serving_size_g":100}'
+expect "and may correct it, on the record" \
+  "$(curl -fsS -X PUT "$BASE/foods/$MILK" -H "$OAUTH" -H 'content-type: application/json' \
+      -d '{"name":"Whole milk","calories_kcal":61,"protein_g":3.2,"carbs_g":4.8,"fat_g":3.3,"serving_size_g":244,"serving_label":"1 cup"}' \
+      | j "['provenance']['last_edited_by_name']")" \
+  "Other"
 
 # Recipes are the opposite: private until shared.
 PUB=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
@@ -320,13 +347,124 @@ status "reject a zero cadence"     400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'c
 status "reject an unknown kind"    400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"floss","every_days":1}]}'
 status "reject a duplicate kind"   400 -X PUT "$BASE/reminders" -H "$AUTH" -H 'content-type: application/json' -d '{"reminders":[{"kind":"weigh_in","every_days":7},{"kind":"weigh_in","every_days":3}]}'
 
+echo "== food provenance"
+# Foods are a shared record rather than personal notes, so the interesting
+# assertions are about the paper trail: who changed what, whether anyone else
+# agrees, and whether a change can be undone.
+VAR=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Rolled oats\",\"calories_kcal\":71,\"protein_g\":2.5,\"carbs_g\":12,\"fat_g\":1.5,\"serving_size_g\":200,\"variant_of\":\"$OATS\",\"variant_label\":\"cooked\"}" | j "['id']")
+expect "a variant points at its parent"   "$(curl -fsS "$BASE/foods/$VAR" -H "$AUTH" | j "['parent']['name']")" "Rolled oats"
+expect "and the parent lists it"          "$(curl -fsS "$BASE/foods/$OATS" -H "$AUTH" | j " and [v['variant_label'] for v in d['variants']]")" "['cooked']"
+status "the same label twice is refused"  409 -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' -d "{\"name\":\"x\",\"calories_kcal\":1,\"protein_g\":1,\"carbs_g\":1,\"fat_g\":1,\"variant_of\":\"$OATS\",\"variant_label\":\"Cooked\"}"
+status "a variant of a variant is refused" 400 -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' -d "{\"name\":\"x\",\"calories_kcal\":1,\"protein_g\":1,\"carbs_g\":1,\"fat_g\":1,\"variant_of\":\"$VAR\",\"variant_label\":\"diced\"}"
+status "a label with no parent is refused" 400 -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/json' -d '{"name":"x","calories_kcal":1,"protein_g":1,"carbs_g":1,"fat_g":1,"variant_label":"raw"}'
+
+# Anyone may edit anyone's food. What makes that safe is the rest of this block.
+EDIT=$(curl -fsS -X PUT "$BASE/foods/$VAR" -H "$AUTH2" -H 'content-type: application/json' \
+  -d "{\"name\":\"Rolled oats\",\"calories_kcal\":68,\"protein_g\":2.5,\"carbs_g\":12,\"fat_g\":1.5,\"serving_size_g\":200,\"variant_of\":\"$OATS\",\"variant_label\":\"cooked\",\"edit_summary\":\"68 kcal cooked, per the pack\"}")
+expect "another account can edit it"      "$(echo "$EDIT" | j "['revision']")" "2"
+expect "and the edit is attributed"       "$(echo "$EDIT" | j "['provenance']['last_edited_by_name']")" "Smoke Two"
+expect "two people have now touched it"   "$(echo "$EDIT" | j "['provenance']['contributors']")" "2"
+
+REVS=$(curl -fsS "$BASE/foods/$VAR/revisions" -H "$AUTH")
+expect "both revisions are kept"          "$(echo "$REVS" | j ".__len__()")" "2"
+expect "the diff names the changed field" "$(echo "$REVS" | j "[0]['changed_fields']")" "['calories_kcal']"
+expect "the summary is on the revision"   "$(echo "$REVS" | j "[0]['summary']")" "68 kcal cooked, per the pack"
+
+status "you cannot vouch for your own edit" 403 -X POST "$BASE/foods/$VAR/verify" -H "$AUTH2" -H 'content-type: application/json' -d '{"verdict":"confirm"}'
+expect "one confirmation is not a quorum" \
+  "$(curl -fsS -X POST "$BASE/foods/$VAR/verify" -H "$AUTH" -H 'content-type: application/json' -d '{"verdict":"confirm"}' | j "['provenance']['status']")" \
+  "unverified"
+expect "a second one is"  \
+  "$(curl -fsS -X POST "$BASE/foods/$VAR/verify" -H "$AUTH3" -H 'content-type: application/json' -d '{"verdict":"confirm"}' | j "['provenance']['status']")" \
+  "verified"
+
+# The reason verification is keyed to a revision: agreement was given to a
+# particular set of numbers and does not transfer to the next set.
+AFTER=$(curl -fsS -X PUT "$BASE/foods/$VAR" -H "$AUTH3" -H 'content-type: application/json' \
+  -d "{\"name\":\"Rolled oats\",\"calories_kcal\":70,\"protein_g\":2.5,\"carbs_g\":12,\"fat_g\":1.5,\"serving_size_g\":200,\"variant_of\":\"$OATS\",\"variant_label\":\"cooked\"}")
+expect "an edit drops it back to unverified" "$(echo "$AFTER" | j "['provenance']['status']")"        "unverified"
+expect "and the old votes stop counting"     "$(echo "$AFTER" | j "['provenance']['confirmations']")" "0"
+expect "but are still on the record"         "$(curl -fsS "$BASE/foods/$VAR/verify" -H "$AUTH" | j " and [v['current'] for v in d]")" "[False, False]"
+expect "a dispute is louder than silence" \
+  "$(curl -fsS -X POST "$BASE/foods/$VAR/verify" -H "$AUTH" -H 'content-type: application/json' -d '{"verdict":"dispute","note":"cooked oats are nearer 71"}' | j "['provenance']['status']")" \
+  "disputed"
+
+# Undoing a bad edit moves the history forward rather than erasing it.
+REVERTED=$(curl -fsS -X POST "$BASE/foods/$VAR/revert" -H "$AUTH2" -H 'content-type: application/json' -d '{"revision":1,"reason":"back to the measured value"}')
+expect "a revert restores the value"   "$(echo "$REVERTED" | j "['calories_kcal']")" "71.0"
+expect "as a new revision"             "$(echo "$REVERTED" | j "['revision']")"      "4"
+expect "leaving the bad edit on record" "$(curl -fsS "$BASE/foods/$VAR/revisions" -H "$AUTH" | j ".__len__()")" "4"
+
+status "a food others have worked on cannot be deleted" 403 -X DELETE "$BASE/foods/$VAR" -H "$AUTH2"
+
+EXPORT=$(curl -fsS "$BASE/foods/export" -H "$AUTH")
+expect "the export is versioned"        "$(echo "$EXPORT" | j "['format']")" "1"
+expect "and carries no internal ids"    "$(echo "$EXPORT" | j " and any('id' in f for f in d['foods'])")" "False"
+expect "a variant exports by parent key" \
+  "$(echo "$EXPORT" | j " and [f['variant_of_key'] for f in d['foods'] if f['variant_label']=='cooked'] != [None]")" "True"
+
+echo "== api keys"
+KEY=$(curl -fsS -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke dashboard"}')
+KEYTOKEN=$(echo "$KEY" | j "['token']")
+KEYID=$(echo "$KEY" | j "['id']")
+expect "a new key defaults to read-only" "$(echo "$KEY" | j "['scopes']")" "['read']"
+expect "the token is returned once"      "$(echo "$KEY" | j " and d['token'].startswith('nomi_')")" "True"
+expect "and never again"                 "$(curl -fsS "$BASE/keys" -H "$AUTH2" | j " and any('token' in k for k in d)")" "False"
+expect "the prefix identifies the key"   "$(curl -fsS "$BASE/keys" -H "$AUTH2" | j " and d[0]['prefix'] == \"$KEYTOKEN\"[:13]")" "True"
+
+status "a read key can read"             200 "$BASE/foods" -H "Authorization: Bearer $KEYTOKEN"
+status "the x-api-key header works too"  200 "$BASE/foods" -H "x-api-key: $KEYTOKEN"
+status "a read key cannot write"         403 -X POST "$BASE/foods" -H "Authorization: Bearer $KEYTOKEN" -H 'content-type: application/json' -d '{"name":"nope","calories_kcal":1,"protein_g":1,"carbs_g":1,"fat_g":1}'
+status "and cannot mint another key"     403 -X POST "$BASE/keys"  -H "Authorization: Bearer $KEYTOKEN" -H 'content-type: application/json' -d '{"name":"second"}'
+status "nor even list them"              403 "$BASE/keys" -H "Authorization: Bearer $KEYTOKEN"
+
+WKEY=$(curl -fsS -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke logger","scopes":["write"]}' | j "['token']")
+status "a write key can write"           201 -X POST "$BASE/foods" -H "Authorization: Bearer $WKEY" -H 'content-type: application/json' -d '{"name":"Logged by a key","calories_kcal":10,"protein_g":1,"carbs_g":1,"fat_g":1}'
+status "an unknown token is a 401"       401 "$BASE/foods" -H 'Authorization: Bearer nomi_thisisnotarealtokenatall'
+status "names are unique while active"   409 -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke dashboard"}'
+curl -fsS -X DELETE "$BASE/keys/$KEYID" -H "$AUTH2" >/dev/null
+status "a revoked key stops working"     401 "$BASE/foods" -H "Authorization: Bearer $KEYTOKEN"
+status "and frees its name"              201 -X POST "$BASE/keys" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"smoke dashboard"}'
+
+echo "== administration"
+# A self-hosted instance has no outside authority to appoint an owner, so the
+# first account to exist becomes one. That rule only has something to say on a
+# fresh database; re-running this script against a used one is not a failure.
+if [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/admin/stats" -H "$AUTH")" = "200" ]; then
+  pass "the first account administers the instance"
+  status "and later accounts do not"      403 "$BASE/admin/stats" -H "$AUTH2"
+  expect "stats report the quorum in use" "$(curl -fsS "$BASE/admin/stats" -H "$AUTH" | j "['food_quorum'] >= 1")" "True"
+  expect "the user list carries activity" "$(curl -fsS "$BASE/admin/users" -H "$AUTH" | j " and any(u['food_edits'] > 0 for u in d)")" "True"
+
+  expect "an administrator can promote"   "$(curl -fsS -X PATCH "$BASE/admin/users/$UID2" -H "$AUTH" -H 'content-type: application/json' -d '{"is_admin":true}' | j "['is_admin']")" "True"
+  status "but not demote themselves"      400 -X PATCH "$BASE/admin/users/$(curl -fsS "$BASE/auth/me" -H "$AUTH" | j "['id']")" -H "$AUTH" -H 'content-type: application/json' -d '{"is_admin":false}'
+
+  curl -fsS -X PATCH "$BASE/admin/users/$UID2" -H "$AUTH" -H 'content-type: application/json' -d '{"disabled":true}' >/dev/null
+  status "a suspended account is locked out"   403 "$BASE/foods" -H "$AUTH2"
+  status "its keys are locked out with it"     403 "$BASE/foods" -H "Authorization: Bearer $WKEY"
+  status "and it cannot sign back in"          403 -X POST "$BASE/auth/login" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL2\",\"password\":\"$PASSWORD\"}"
+  curl -fsS -X PATCH "$BASE/admin/users/$UID2" -H "$AUTH" -H 'content-type: application/json' -d '{"disabled":false}' >/dev/null
+  status "restoring it restores access"        200 "$BASE/foods" -H "$AUTH2"
+
+  # Deletion is closed to everyone else once a food is shared work, but an
+  # administrator is the escape hatch for an entry that should not exist.
+  JUNK=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH2" -H 'content-type: application/json' -d '{"name":"Spam entry","calories_kcal":1,"protein_g":1,"carbs_g":1,"fat_g":1}' | j "['id']")
+  curl -fsS -X PUT "$BASE/foods/$JUNK" -H "$AUTH3" -H 'content-type: application/json' -d '{"name":"Spam entry edited","calories_kcal":2,"protein_g":1,"carbs_g":1,"fat_g":1}' >/dev/null
+  status "an administrator can remove a food outright" 204 -X DELETE "$BASE/foods/$JUNK" -H "$AUTH"
+else
+  printf '  – skipped: this database already had accounts before the run\n'
+fi
+
 echo "== referential integrity"
+# $OATS is untouched by anyone else, so the only thing standing between it and
+# deletion is the recipe that references it.
 status "food in use cannot be deleted"   400 -X DELETE "$BASE/foods/$OATS" -H "$AUTH"
 status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "$AUTH"
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 28 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 36 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

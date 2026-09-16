@@ -1,3 +1,4 @@
+pub mod api_key;
 pub mod diary;
 pub mod food;
 pub mod nutrients;

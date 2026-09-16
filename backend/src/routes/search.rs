@@ -41,11 +41,7 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/foods", get(stream_foods))
 }
 
-const COLUMNS: &str = r#"
-    id, source, source_id, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
-    fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g, serving_label,
-    created_by, created_at, updated_at
-"#;
+use crate::domain::food::FOOD_COLUMNS as COLUMNS;
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct StreamQuery {

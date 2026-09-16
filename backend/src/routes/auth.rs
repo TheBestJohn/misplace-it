@@ -16,10 +16,7 @@ pub fn router() -> Router<AppState> {
         .route("/me", get(me))
 }
 
-const USER_COLUMNS: &str = r#"
-    id, email, password_hash, display_name, sex, birth_date, height_cm,
-    activity_level, goal, target_weight_kg, created_at, updated_at
-"#;
+use crate::domain::user::USER_COLUMNS;
 
 #[utoipa::path(
     post, path = "/api/v1/auth/register", tag = "auth",
@@ -42,15 +39,31 @@ pub async fn register(
     let email = body.email.trim().to_lowercase();
     let hash = hash_password(&body.password)?;
 
+    let mut tx = state.db.begin().await?;
+
+    // Whoever installs a self-hosted instance owns it: there is no outside
+    // authority to appoint the first administrator, so the first account to
+    // exist becomes one. The advisory lock makes that literally true — without
+    // it, two people registering at the same instant could both observe an
+    // empty table and both be promoted.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('nom_inal.admins'))")
+        .execute(&mut *tx)
+        .await?;
+
+    let first: bool = sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&mut *tx)
+        .await?;
+
     let user: UserRow = sqlx::query_as(&format!(
-        "INSERT INTO users (email, password_hash, display_name)
-         VALUES ($1, $2, $3)
+        "INSERT INTO users (email, password_hash, display_name, is_admin)
+         VALUES ($1, $2, $3, $4)
          RETURNING {USER_COLUMNS}"
     ))
     .bind(&email)
     .bind(&hash)
     .bind(body.display_name.trim())
-    .fetch_one(&state.db)
+    .bind(first)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| match e {
         sqlx::Error::Database(ref db) if db.is_unique_violation() => {
@@ -58,6 +71,8 @@ pub async fn register(
         }
         other => other.into(),
     })?;
+
+    tx.commit().await?;
 
     Ok((
         axum::http::StatusCode::CREATED,
@@ -91,6 +106,11 @@ pub async fn login(
     let user = user.ok_or(ApiError::Unauthorized)?;
     if !verify_password(&body.password, &user.password_hash) {
         return Err(ApiError::Unauthorized);
+    }
+    // Checked after the password so a suspended account is not distinguishable
+    // from a wrong password to someone who does not already know the password.
+    if user.disabled_at.is_some() {
+        return Err(ApiError::forbidden("this account has been disabled"));
     }
 
     Ok(Json(token_response(&state, user)?))

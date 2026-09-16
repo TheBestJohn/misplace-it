@@ -23,6 +23,11 @@ pub struct Config {
     pub photo_dir: String,
     /// Largest accepted upload, before downscaling.
     pub max_upload_bytes: usize,
+    /// Net confirmations a food revision needs before it counts as verified.
+    /// Configurable because the right number depends on how many people use the
+    /// instance: on a single-user deployment two independent checks never
+    /// arrive, and on a public one a single confirmation is worth little.
+    pub food_quorum: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +67,10 @@ impl Config {
                 .unwrap_or(15)
                 * 1024
                 * 1024,
+            food_quorum: opt("FOOD_QUORUM")
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|v| *v >= 1)
+                .unwrap_or(2),
             trgm_word_threshold: opt("TRGM_WORD_THRESHOLD")
                 .and_then(|v| v.parse().ok())
                 .filter(|v: &f64| (0.0..=1.0).contains(v))

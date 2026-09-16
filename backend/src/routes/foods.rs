@@ -2,13 +2,16 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::{DateTime, Utc};
+use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::food::{
-    BarcodeLookup, ExternalFood, ExternalSearchQuery, ExternalSearchResponse, Food, FoodDetail,
-    FoodSearchQuery, UpsertFoodRequest,
+    BarcodeLookup, ExportQuery, ExternalFood, ExternalSearchQuery, ExternalSearchResponse, Food,
+    FoodDetail, FoodExport, FoodExportBundle, FoodProvenance, FoodRevision, FoodSearchQuery,
+    FoodVerification, RevertRequest, UpsertFoodRequest, Verdict, VerificationStatus, VerifyRequest,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::extract::Json;
@@ -21,14 +24,50 @@ pub fn router() -> Router<AppState> {
         .route("/external/{source}/{source_id}", get(external_detail))
         .route("/barcode/{upc}", get(barcode))
         .route("/import", post(import))
+        .route("/export", get(export))
         .route("/{id}", get(get_one).put(update).delete(delete))
+        .route("/{id}/revisions", get(revisions))
+        .route("/{id}/revert", post(revert))
+        .route(
+            "/{id}/verify",
+            get(verifications).post(verify).delete(unverify),
+        )
 }
 
-const COLUMNS: &str = r#"
-    id, source, source_id, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
-    fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g, serving_label,
-    created_by, created_at, updated_at
+use crate::domain::food::FOOD_COLUMNS as COLUMNS;
+
+/// Column list qualified for queries that join `foods` to anything else.
+const F_COLUMNS: &str = r#"
+    f.id, f.source, f.source_id, f.name, f.brand, f.upc, f.calories_kcal, f.protein_g,
+    f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g, f.saturated_fat_g, f.sodium_mg,
+    f.serving_size_g, f.serving_label, f.variant_of, f.variant_label, f.revision,
+    f.verified_at, f.created_by, f.created_at, f.updated_at
 "#;
+
+/// Open a transaction that the history triggers can attribute.
+///
+/// The settings are transaction-local, so they have to be set inside an
+/// explicit transaction: a bare statement on a pooled connection is its own
+/// transaction and the value would be discarded before the trigger ran.
+async fn authored_tx(
+    state: &AppState,
+    actor: Uuid,
+    change_kind: &str,
+    summary: Option<&str>,
+) -> ApiResult<Transaction<'static, Postgres>> {
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "SELECT set_config('nom_inal.actor', $1, true),
+                set_config('nom_inal.change_kind', $2, true),
+                set_config('nom_inal.edit_summary', coalesce($3, ''), true)",
+    )
+    .bind(actor.to_string())
+    .bind(change_kind)
+    .bind(summary.map(str::trim).filter(|s| !s.is_empty()))
+    .execute(&mut *tx)
+    .await?;
+    Ok(tx)
+}
 
 #[utoipa::path(
     get, path = "/api/v1/foods", tag = "foods",
@@ -85,10 +124,11 @@ pub async fn list(
 )]
 pub async fn get_one(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<FoodDetail>> {
-    Ok(Json(load_food(&state, id).await?.into()))
+    let food = load_food(&state, id).await?;
+    Ok(Json(detail(&state, food, user.id).await?))
 }
 
 #[utoipa::path(
@@ -103,12 +143,15 @@ pub async fn create(
     Json(body): Json<UpsertFoodRequest>,
 ) -> ApiResult<(StatusCode, Json<FoodDetail>)> {
     body.validate()?;
+    body.check_variant().map_err(ApiError::bad_request)?;
+
+    let mut tx = authored_tx(&state, user.id, "create", body.edit_summary.as_deref()).await?;
 
     let row: Food = sqlx::query_as(&format!(
         "INSERT INTO foods (source, name, brand, upc, calories_kcal, protein_g, carbs_g, fat_g,
                             fiber_g, sugar_g, saturated_fat_g, sodium_mg, serving_size_g,
-                            serving_label, created_by)
-         VALUES ('custom', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            serving_label, variant_of, variant_label, created_by)
+         VALUES ('custom', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          RETURNING {COLUMNS}"
     ))
     .bind(body.name.trim())
@@ -124,11 +167,19 @@ pub async fn create(
     .bind(body.sodium_mg)
     .bind(body.serving_size_g)
     .bind(body.serving_label.as_deref())
+    .bind(body.variant_of)
+    .bind(body.variant_label.as_deref().map(str::trim))
     .bind(user.id)
-    .fetch_one(&state.db)
-    .await?;
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(variant_error)?;
 
-    Ok((StatusCode::CREATED, Json(row.into())))
+    tx.commit().await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(detail(&state, row, user.id).await?),
+    ))
 }
 
 #[utoipa::path(
@@ -138,7 +189,7 @@ pub async fn create(
     request_body = UpsertFoodRequest,
     responses(
         (status = 200, body = FoodDetail),
-        (status = 403, description = "Imported reference foods are read-only", body = crate::error::ErrorBody),
+        (status = 400, description = "Invalid variant relationship", body = crate::error::ErrorBody),
         (status = 404, body = crate::error::ErrorBody),
     )
 )]
@@ -149,19 +200,25 @@ pub async fn update(
     Json(body): Json<UpsertFoodRequest>,
 ) -> ApiResult<Json<FoodDetail>> {
     body.validate()?;
+    body.check_variant().map_err(ApiError::bad_request)?;
 
-    let existing = load_food(&state, id).await?;
-    // Imported rows mirror an upstream record; editing them would silently
-    // diverge from the source, so only user-authored foods are writable.
-    if existing.created_by != Some(user.id) {
-        return Err(ApiError::Forbidden);
-    }
+    // Anyone signed in may edit any food. That is the point of the model: a
+    // food is a claim about the world, not the property of whoever typed it in
+    // first, and the person holding the label in their hand is usually not the
+    // original author. Openness is made safe by what surrounds it rather than
+    // by locking the row — every edit is attributed, every prior state is
+    // recoverable, and the edit drops the entry back to unverified until other
+    // people agree with it.
+    load_food(&state, id).await?;
+
+    let mut tx = authored_tx(&state, user.id, "edit", body.edit_summary.as_deref()).await?;
 
     let row: Food = sqlx::query_as(&format!(
         "UPDATE foods SET
             name = $2, brand = $3, upc = $4, calories_kcal = $5, protein_g = $6,
             carbs_g = $7, fat_g = $8, fiber_g = $9, sugar_g = $10, saturated_fat_g = $11,
-            sodium_mg = $12, serving_size_g = $13, serving_label = $14, updated_at = now()
+            sodium_mg = $12, serving_size_g = $13, serving_label = $14,
+            variant_of = $15, variant_label = $16
          WHERE id = $1
          RETURNING {COLUMNS}"
     ))
@@ -179,10 +236,15 @@ pub async fn update(
     .bind(body.sodium_mg)
     .bind(body.serving_size_g)
     .bind(body.serving_label.as_deref())
-    .fetch_one(&state.db)
-    .await?;
+    .bind(body.variant_of)
+    .bind(body.variant_label.as_deref().map(str::trim))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(variant_error)?;
 
-    Ok(Json(row.into()))
+    tx.commit().await?;
+
+    Ok(Json(detail(&state, row, user.id).await?))
 }
 
 #[utoipa::path(
@@ -201,8 +263,30 @@ pub async fn delete(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let existing = load_food(&state, id).await?;
-    if existing.created_by != Some(user.id) {
-        return Err(ApiError::Forbidden);
+
+    // Editing is open; deleting is not. Once other people have edited or
+    // vouched for an entry it is shared work, and the right response to a bad
+    // entry at that point is an edit or a revert, both of which keep the
+    // record. Deletion stays available only for the case it is actually for:
+    // taking back something you just added that nobody has touched.
+    let untouched: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (
+             SELECT 1 FROM food_revisions WHERE food_id = $1 AND revision > 1
+         ) AND NOT EXISTS (
+             SELECT 1 FROM food_verifications WHERE food_id = $1
+         )",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+
+    let own = existing.created_by == Some(user.id);
+    if !(user.is_admin || (own && untouched)) {
+        return Err(ApiError::forbidden(if own {
+            "this food has been edited or verified by others; edit or revert it instead of deleting it"
+        } else {
+            "only the author of an untouched food, or an administrator, can delete it"
+        }));
     }
 
     // ON DELETE RESTRICT on recipe_items/diary_entries turns this into a
@@ -283,7 +367,7 @@ pub async fn search_external(
 )]
 pub async fn barcode(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Path(upc): Path<String>,
 ) -> ApiResult<Json<BarcodeLookup>> {
     let upc = upc.trim().to_string();
@@ -317,9 +401,14 @@ pub async fn barcode(
         return Err(ApiError::NotFound("barcode"));
     }
 
+    let local = match local {
+        Some(food) => Some(detail(&state, food, user.id).await?),
+        None => None,
+    };
+
     Ok(Json(BarcodeLookup {
         upc,
-        local: local.map(Into::into),
+        local,
         external,
     }))
 }
@@ -335,7 +424,7 @@ pub async fn barcode(
 )]
 pub async fn import(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    user: CurrentUser,
     Json(body): Json<ExternalFood>,
 ) -> ApiResult<Json<FoodDetail>> {
     if !matches!(body.source.as_str(), "usda" | "off") {
@@ -345,9 +434,11 @@ pub async fn import(
         return Err(ApiError::bad_request("source_id is required"));
     }
 
+    let mut tx = authored_tx(&state, user.id, "import", None).await?;
+
     // Idempotent by (source, source_id): importing the same upstream food twice
     // refreshes it in place instead of creating a duplicate.
-    let row: Food = sqlx::query_as(&format!(
+    let row: Option<Food> = sqlx::query_as(&format!(
         "INSERT INTO foods (source, source_id, name, brand, upc, calories_kcal, protein_g,
                             carbs_g, fat_g, fiber_g, sugar_g, saturated_fat_g, sodium_mg,
                             serving_size_g, serving_label)
@@ -367,6 +458,11 @@ pub async fn import(
             serving_size_g = EXCLUDED.serving_size_g,
             serving_label = EXCLUDED.serving_label,
             updated_at = now()
+         -- Refresh only rows nobody has corrected. `revision = 1` means the
+         -- entry is still exactly what the provider sent, so overwriting it
+         -- loses nothing; past that, a person has deliberately disagreed with
+         -- upstream and a re-import must not quietly undo them.
+         WHERE foods.revision = 1
          RETURNING {COLUMNS}"
     ))
     .bind(&body.source)
@@ -388,10 +484,28 @@ pub async fn import(
         100.0
     })
     .bind(body.serving_label.as_deref())
-    .fetch_one(&state.db)
+    .fetch_optional(&mut *tx)
     .await?;
 
-    Ok(Json(row.into()))
+    tx.commit().await?;
+
+    // The `WHERE foods.revision = 1` guard above means a conflict with a
+    // locally-edited row updates nothing and RETURNING yields no row. That is
+    // success, not failure: the caller wanted this food to exist, and it does.
+    let row = match row {
+        Some(row) => row,
+        None => {
+            sqlx::query_as(&format!(
+                "SELECT {COLUMNS} FROM foods WHERE source = $1 AND source_id = $2"
+            ))
+            .bind(&body.source)
+            .bind(body.source_id.trim())
+            .fetch_one(&state.db)
+            .await?
+        }
+    };
+
+    Ok(Json(detail(&state, row, user.id).await?))
 }
 
 #[utoipa::path(
@@ -449,4 +563,515 @@ pub async fn load_food(state: &AppState, id: Uuid) -> ApiResult<Food> {
         .fetch_optional(&state.db)
         .await?
         .ok_or(ApiError::NotFound("food"))
+}
+
+// ---------------------------------------------------------------------------
+// Provenance: variants, history and verification
+// ---------------------------------------------------------------------------
+
+/// Turn the variant guard trigger's exception into a 400 with its own message.
+///
+/// The trigger raises `check_violation`, which the generic mapper would render
+/// as "that conflicts with an existing record" — true but useless. The three
+/// things it guards against are all things a person can fix, so they get told
+/// what they were.
+fn variant_error(e: sqlx::Error) -> ApiError {
+    let sqlx::Error::Database(db) = &e else {
+        return e.into();
+    };
+
+    // Two different failures, two different answers. The trigger's
+    // check_violation means the relationship itself is impossible — a 400,
+    // with the trigger's own wording, which already says what was wrong. The
+    // unique index means the relationship is fine but taken, which is a 409.
+    if db.is_unique_violation() && db.message().contains("variant") {
+        return ApiError::Conflict("that food already has a variant with this label".into());
+    }
+    if db.message().contains("variant") {
+        return ApiError::bad_request(db.message().to_string());
+    }
+    e.into()
+}
+
+#[derive(sqlx::FromRow)]
+struct VerificationRow {
+    user_id: Uuid,
+    display_name: String,
+    revision: i32,
+    verdict: String,
+    note: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ProvenanceRow {
+    confirmations: i64,
+    disputes: i64,
+    contributors: i64,
+    last_change_kind: String,
+    last_edited_at: DateTime<Utc>,
+    last_edited_by: Option<Uuid>,
+    last_edited_by_name: Option<String>,
+    last_edit_summary: Option<String>,
+    your_verdict: Option<String>,
+    authored_current: bool,
+}
+
+/// Read the editorial state of one food's current revision.
+///
+/// Everything is scoped to `f.revision`: the vote counts, your own vote and
+/// whether you are allowed to vote at all. That single join condition is what
+/// implements "an edit resets verification" — there is no reset step anywhere,
+/// the old votes simply stop being selected.
+async fn load_provenance(state: &AppState, food: &Food, viewer: Uuid) -> ApiResult<FoodProvenance> {
+    let row: ProvenanceRow = sqlx::query_as(
+        "SELECT
+             coalesce(v.confirmations, 0) AS confirmations,
+             coalesce(v.disputes, 0)      AS disputes,
+             (SELECT count(DISTINCT edited_by) FROM food_revisions
+               WHERE food_id = f.id AND edited_by IS NOT NULL) AS contributors,
+             coalesce(r.change_kind, 'create')      AS last_change_kind,
+             coalesce(r.created_at, f.updated_at)   AS last_edited_at,
+             r.edited_by                            AS last_edited_by,
+             eu.display_name                        AS last_edited_by_name,
+             r.summary                              AS last_edit_summary,
+             mv.verdict                             AS your_verdict,
+             (r.edited_by IS NOT DISTINCT FROM $2)  AS authored_current
+         FROM foods f
+         LEFT JOIN LATERAL (
+             SELECT count(*) FILTER (WHERE verdict = 'confirm') AS confirmations,
+                    count(*) FILTER (WHERE verdict = 'dispute') AS disputes
+             FROM food_verifications
+             WHERE food_id = f.id AND revision = f.revision
+         ) v ON TRUE
+         LEFT JOIN food_revisions r ON r.food_id = f.id AND r.revision = f.revision
+         LEFT JOIN users eu ON eu.id = r.edited_by
+         LEFT JOIN food_verifications mv
+                ON mv.food_id = f.id AND mv.revision = f.revision AND mv.user_id = $2
+         WHERE f.id = $1",
+    )
+    .bind(food.id)
+    .bind(viewer)
+    .fetch_one(&state.db)
+    .await?;
+
+    let quorum = state.config.food_quorum;
+
+    Ok(FoodProvenance {
+        revision: food.revision,
+        status: VerificationStatus::evaluate(row.confirmations, row.disputes, quorum),
+        confirmations: row.confirmations,
+        disputes: row.disputes,
+        quorum,
+        verified_at: food.verified_at,
+        contributors: row.contributors,
+        last_change_kind: row.last_change_kind,
+        last_edited_at: row.last_edited_at,
+        last_edited_by: row.last_edited_by,
+        last_edited_by_name: row.last_edited_by_name,
+        last_edit_summary: row.last_edit_summary,
+        your_verdict: row.your_verdict.as_deref().and_then(Verdict::parse),
+        can_verify: !row.authored_current,
+    })
+}
+
+/// A food plus everything that only the detail view needs: its family and its
+/// editorial state.
+pub async fn detail(state: &AppState, food: Food, viewer: Uuid) -> ApiResult<FoodDetail> {
+    let provenance = load_provenance(state, &food, viewer).await?;
+
+    // Exactly one of these runs: a food is either a parent with variants or a
+    // variant with a parent, never both, because variants are one level deep.
+    let (variants, parent) = match food.variant_of {
+        None => {
+            let variants: Vec<Food> = sqlx::query_as(&format!(
+                "SELECT {COLUMNS} FROM foods WHERE variant_of = $1 ORDER BY lower(variant_label)"
+            ))
+            .bind(food.id)
+            .fetch_all(&state.db)
+            .await?;
+            (variants, None)
+        }
+        Some(parent_id) => {
+            let parent: Option<Food> =
+                sqlx::query_as(&format!("SELECT {COLUMNS} FROM foods WHERE id = $1"))
+                    .bind(parent_id)
+                    .fetch_optional(&state.db)
+                    .await?;
+            (Vec::new(), parent)
+        }
+    };
+
+    let per_serving = food.nutrients_for_grams(food.serving_size_g).rounded();
+
+    Ok(FoodDetail {
+        food,
+        per_serving,
+        provenance,
+        variants,
+        parent,
+    })
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/foods/{id}/revisions", tag = "foods",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Food id")),
+    responses((status = 200, body = Vec<FoodRevision>), (status = 404, body = crate::error::ErrorBody))
+)]
+pub async fn revisions(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<FoodRevision>>> {
+    load_food(&state, id).await?;
+
+    let mut rows: Vec<FoodRevision> = sqlx::query_as(
+        "SELECT r.id, r.food_id, r.revision, r.change_kind, r.edited_by,
+                u.display_name AS edited_by_name, r.summary, r.snapshot, r.created_at
+         FROM food_revisions r
+         LEFT JOIN users u ON u.id = r.edited_by
+         WHERE r.food_id = $1
+         ORDER BY r.revision DESC",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+
+    // Diff each revision against the one below it. Doing this server-side keeps
+    // the two sides from disagreeing about what counts as a change — the same
+    // snapshot the database compared to decide whether to bump the revision is
+    // the one being compared here.
+    for i in 0..rows.len() {
+        let previous = rows.get(i + 1).map(|r| r.snapshot.clone());
+        rows[i].changed_fields = match previous {
+            Some(prev) => changed_fields(&prev, &rows[i].snapshot),
+            // The first revision introduced everything, so listing every field
+            // as "changed" would be noise.
+            None => Vec::new(),
+        };
+    }
+
+    Ok(Json(rows))
+}
+
+/// Field names whose value differs between two snapshots.
+fn changed_fields(before: &serde_json::Value, after: &serde_json::Value) -> Vec<String> {
+    let (Some(before), Some(after)) = (before.as_object(), after.as_object()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = after
+        .iter()
+        .filter(|(k, v)| before.get(*k) != Some(*v))
+        .map(|(k, _)| k.clone())
+        // A field dropped from the schema between revisions also counts.
+        .chain(
+            before
+                .keys()
+                .filter(|k| !after.contains_key(*k))
+                .map(|k| k.to_string()),
+        )
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/foods/{id}/revert", tag = "foods",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Food id")),
+    request_body = RevertRequest,
+    responses(
+        (status = 200, body = FoodDetail),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn revert(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<RevertRequest>,
+) -> ApiResult<Json<FoodDetail>> {
+    body.validate()?;
+    load_food(&state, id).await?;
+
+    let snapshot: serde_json::Value = sqlx::query_scalar(
+        "SELECT snapshot FROM food_revisions WHERE food_id = $1 AND revision = $2",
+    )
+    .bind(id)
+    .bind(body.revision)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(ApiError::NotFound("revision"))?;
+
+    let summary = body.reason.clone().unwrap_or_else(|| {
+        format!(
+            "restored the numbers as they stood at revision {}",
+            body.revision
+        )
+    });
+    let mut tx = authored_tx(&state, user.id, "revert", Some(&summary)).await?;
+
+    // Writing the snapshot back through `jsonb_populate_record` means the
+    // restore covers whatever columns the snapshot actually holds, so a
+    // revision taken before a nutrient existed still restores cleanly instead
+    // of needing this statement updated every time the schema grows.
+    let row: Food = sqlx::query_as(&format!(
+        "UPDATE foods AS f SET
+            name = s.name, brand = s.brand, upc = s.upc,
+            calories_kcal = s.calories_kcal, protein_g = s.protein_g,
+            carbs_g = s.carbs_g, fat_g = s.fat_g, fiber_g = s.fiber_g,
+            sugar_g = s.sugar_g, saturated_fat_g = s.saturated_fat_g,
+            sodium_mg = s.sodium_mg, serving_size_g = s.serving_size_g,
+            serving_label = s.serving_label, variant_of = s.variant_of,
+            variant_label = s.variant_label
+         FROM (SELECT (jsonb_populate_record(NULL::foods, $2::jsonb)).*) AS s
+         WHERE f.id = $1
+         RETURNING {F_COLUMNS}"
+    ))
+    .bind(id)
+    .bind(&snapshot)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(variant_error)?;
+
+    tx.commit().await?;
+
+    Ok(Json(detail(&state, row, user.id).await?))
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/foods/{id}/verify", tag = "foods",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Food id")),
+    responses((status = 200, body = Vec<FoodVerification>), (status = 404, body = crate::error::ErrorBody))
+)]
+pub async fn verifications(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<FoodVerification>>> {
+    let food = load_food(&state, id).await?;
+
+    let rows: Vec<VerificationRow> = sqlx::query_as(
+        "SELECT v.user_id, u.display_name, v.revision, v.verdict, v.note, v.created_at
+         FROM food_verifications v
+         JOIN users u ON u.id = v.user_id
+         WHERE v.food_id = $1
+         ORDER BY v.revision DESC, v.created_at ASC",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| FoodVerification {
+                user_id: r.user_id,
+                display_name: r.display_name,
+                revision: r.revision,
+                verdict: Verdict::parse(&r.verdict).unwrap_or(Verdict::Confirm),
+                note: r.note,
+                created_at: r.created_at,
+                current: r.revision == food.revision,
+            })
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/foods/{id}/verify", tag = "foods",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Food id")),
+    request_body = VerifyRequest,
+    responses(
+        (status = 200, body = FoodDetail),
+        (status = 403, description = "You wrote this revision", body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody),
+    )
+)]
+pub async fn verify(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<VerifyRequest>,
+) -> ApiResult<Json<FoodDetail>> {
+    body.validate()?;
+    let food = load_food(&state, id).await?;
+
+    // Endorsing your own edit would make the quorum a count of one person
+    // agreeing with themselves. Administrators are not exempt: the check is
+    // about independence, and an admin confirming their own numbers is exactly
+    // as uninformative as anyone else doing it.
+    let authored: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM food_revisions
+                        WHERE food_id = $1 AND revision = $2 AND edited_by = $3)",
+    )
+    .bind(id)
+    .bind(food.revision)
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await?;
+
+    if authored {
+        return Err(ApiError::forbidden(
+            "you wrote this revision, so someone else has to vouch for it",
+        ));
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    // The primary key is (food, revision, user), so changing your mind updates
+    // your vote rather than stacking a second one.
+    sqlx::query(
+        "INSERT INTO food_verifications (food_id, revision, user_id, verdict, note)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (food_id, revision, user_id) DO UPDATE
+            SET verdict = EXCLUDED.verdict, note = EXCLUDED.note, created_at = now()",
+    )
+    .bind(id)
+    .bind(food.revision)
+    .bind(user.id)
+    .bind(body.verdict.as_str())
+    .bind(
+        body.note
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let food = settle_verification(&mut tx, id, state.config.food_quorum).await?;
+    tx.commit().await?;
+
+    Ok(Json(detail(&state, food, user.id).await?))
+}
+
+#[utoipa::path(
+    delete, path = "/api/v1/foods/{id}/verify", tag = "foods",
+    security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Food id")),
+    responses((status = 200, body = FoodDetail), (status = 404, body = crate::error::ErrorBody))
+)]
+pub async fn unverify(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<FoodDetail>> {
+    let food = load_food(&state, id).await?;
+
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "DELETE FROM food_verifications WHERE food_id = $1 AND revision = $2 AND user_id = $3",
+    )
+    .bind(id)
+    .bind(food.revision)
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
+
+    let food = settle_verification(&mut tx, id, state.config.food_quorum).await?;
+    tx.commit().await?;
+
+    Ok(Json(detail(&state, food, user.id).await?))
+}
+
+/// Recompute `verified_at` from the votes on the current revision.
+///
+/// `verified_at` is a cache of something derivable, kept as a column so that
+/// listing and exporting verified foods is an index scan rather than an
+/// aggregate over every vote. It is recomputed on the only two events that can
+/// change it — a vote cast and a vote withdrawn — and cleared by the edit
+/// trigger, so it cannot drift.
+async fn settle_verification(
+    tx: &mut Transaction<'static, Postgres>,
+    id: Uuid,
+    quorum: i64,
+) -> ApiResult<Food> {
+    let row: Food = sqlx::query_as(&format!(
+        "UPDATE foods AS f SET verified_at = CASE
+             WHEN v.confirmations - v.disputes >= $2 AND v.disputes = 0
+               THEN coalesce(f.verified_at, now())
+             ELSE NULL
+           END
+         FROM (
+             SELECT count(*) FILTER (WHERE verdict = 'confirm') AS confirmations,
+                    count(*) FILTER (WHERE verdict = 'dispute') AS disputes
+             FROM food_verifications
+             WHERE food_id = $1 AND revision = (SELECT revision FROM foods WHERE id = $1)
+         ) v
+         WHERE f.id = $1
+         RETURNING {F_COLUMNS}"
+    ))
+    .bind(id)
+    .bind(quorum)
+    .fetch_one(&mut **tx)
+    .await?;
+
+    Ok(row)
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/foods/export", tag = "foods",
+    security(("bearer" = [])),
+    params(("verified_only" = Option<bool>, Query, description = "Only foods that reached quorum")),
+    responses((status = 200, body = FoodExportBundle))
+)]
+pub async fn export(
+    State(state): State<AppState>,
+    _user: CurrentUser,
+    Query(q): Query<ExportQuery>,
+) -> ApiResult<Json<FoodExportBundle>> {
+    // The point of this endpoint is that the dataset can leave the instance:
+    // dump it, commit it to a repository, review it in public, and seed another
+    // deployment from it. So it deliberately carries no internal ids and no
+    // per-user data — a variant points at its parent by the same natural key
+    // any other instance would compute.
+    let rows: Vec<FoodExport> = sqlx::query_as(
+        "SELECT
+             f.source, f.source_id, f.name, f.brand, f.upc,
+             f.calories_kcal, f.protein_g, f.carbs_g, f.fat_g, f.fiber_g, f.sugar_g,
+             f.saturated_fat_g, f.sodium_mg, f.serving_size_g, f.serving_label,
+             CASE WHEN f.variant_of IS NULL THEN NULL
+                  ELSE lower(btrim(p.name)) || '|' || lower(btrim(coalesce(p.brand, '')))
+             END AS variant_of_key,
+             f.variant_label,
+             f.revision,
+             coalesce(v.confirmations, 0) AS confirmations,
+             coalesce(v.disputes, 0)      AS disputes
+         FROM foods f
+         LEFT JOIN foods p ON p.id = f.variant_of
+         LEFT JOIN LATERAL (
+             SELECT count(*) FILTER (WHERE verdict = 'confirm') AS confirmations,
+                    count(*) FILTER (WHERE verdict = 'dispute') AS disputes
+             FROM food_verifications
+             WHERE food_id = f.id AND revision = f.revision
+         ) v ON TRUE
+         WHERE ($1::bool IS FALSE OR f.verified_at IS NOT NULL)
+         -- Parents before their variants, so an importer reading the file in
+         -- order can always resolve `variant_of_key`.
+         ORDER BY (f.variant_of IS NOT NULL), lower(f.name), lower(coalesce(f.brand, ''))",
+    )
+    .bind(q.verified_only)
+    .fetch_all(&state.db)
+    .await?;
+
+    let quorum = state.config.food_quorum;
+    let foods: Vec<FoodExport> = rows
+        .into_iter()
+        .map(|mut f| {
+            f.status = VerificationStatus::evaluate(f.confirmations, f.disputes, quorum);
+            f
+        })
+        .collect();
+
+    Ok(Json(FoodExportBundle {
+        format: 1,
+        generated_at: Utc::now(),
+        count: foods.len(),
+        foods,
+    }))
 }

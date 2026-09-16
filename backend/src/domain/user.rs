@@ -5,6 +5,12 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
 
+/// Every column `UserRow` reads. Shared for the same reason as `FOOD_COLUMNS`.
+pub const USER_COLUMNS: &str = r#"
+    id, email, password_hash, display_name, sex, birth_date, height_cm,
+    activity_level, goal, target_weight_kg, is_admin, disabled_at, created_at
+"#;
+
 #[derive(Debug, FromRow)]
 pub struct UserRow {
     pub id: Uuid,
@@ -17,6 +23,8 @@ pub struct UserRow {
     pub activity_level: String,
     pub goal: String,
     pub target_weight_kg: Option<f64>,
+    pub is_admin: bool,
+    pub disabled_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -31,6 +39,10 @@ pub struct Profile {
     pub activity_level: String,
     pub goal: String,
     pub target_weight_kg: Option<f64>,
+    /// Drives the admin area in the UI. The server never trusts it — every
+    /// admin route re-checks the flag — but the client needs it to know
+    /// whether to render the link at all.
+    pub is_admin: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -46,6 +58,7 @@ impl From<UserRow> for Profile {
             activity_level: u.activity_level,
             goal: u.goal,
             target_weight_kg: u.target_weight_kg,
+            is_admin: u.is_admin,
             created_at: u.created_at,
         }
     }

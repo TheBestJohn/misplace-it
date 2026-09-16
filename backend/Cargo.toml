@@ -30,6 +30,10 @@ chrono = { version = "0.4", features = ["serde"] }
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["rand_core"] }
 jsonwebtoken = "9"
+# API keys are server-generated 256-bit secrets, so they are digested rather
+# than password-hashed; see the note on api_keys.token_hash in migration 0006.
+sha2 = "0.10"
+base64 = "0.22"
 
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 

@@ -1,6 +1,8 @@
+pub mod admin;
 pub mod auth;
 pub mod diary;
 pub mod foods;
+pub mod keys;
 pub mod photos;
 pub mod profile;
 pub mod recipes;
@@ -51,6 +53,8 @@ pub fn api_router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .nest("/auth", auth::router())
+        .nest("/admin", admin::router())
+        .nest("/keys", keys::router())
         .nest("/profile", profile::router())
         .nest("/weights", weights::router())
         .nest("/weights", photos::weight_photo_router())

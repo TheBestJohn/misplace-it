@@ -37,6 +37,7 @@ services:
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       PHOTO_DIR: /data/photos
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-15}
+      FOOD_QUORUM: ${FOOD_QUORUM:-2}
       RUST_LOG: ${RUST_LOG:-nom_inal=info,tower_http=info,sqlx=warn}
     volumes:
       # Photo bytes live on disk rather than in Postgres, so they need their
