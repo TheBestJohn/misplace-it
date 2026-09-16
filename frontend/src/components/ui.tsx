@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 
-import type { Nutrients } from '../api/types'
+import { Link } from 'react-router-dom'
+
+import type { Nutrients, TargetProgress } from '../api/types'
 import { kcal, round } from '../lib/format'
 
 export function Card({
@@ -65,42 +67,88 @@ export function MacroRow({ n, compact = false }: { n: Nutrients; compact?: boole
   )
 }
 
-/** Progress toward a daily target; renders a plain total when none is set. */
-export function TargetBar({
-  label,
-  value,
-  target,
-  unit = 'g',
-  tone = 'p',
-}: {
-  label: string
-  value: number
-  target: number | null | undefined
-  unit?: string
-  tone?: 'kcal' | 'p' | 'c' | 'f'
-}) {
-  const pct = target && target > 0 ? Math.min(100, (value / target) * 100) : 0
-  const over = target != null && target > 0 && value > target
+/** Macro colours by nutrient, so a bar matches its figure in a MacroRow. */
+const TONES: Record<string, string> = {
+  calories_kcal: 'kcal',
+  protein_g: 'p',
+  carbs_g: 'c',
+  fat_g: 'f',
+}
+
+/**
+ * Progress against one target, read in the target's own direction.
+ *
+ * A budget and a goal are the same arithmetic with opposite meanings: 120% of
+ * a calorie budget is a problem, 120% of a protein goal is a success. Rendering
+ * both as "percent consumed, red when over" — which is what this did before —
+ * is wrong for half of them. So the bar turns red only for a blown budget, and
+ * green for a goal that has been reached, and the caption says "left" for a
+ * budget and "to go" for a goal.
+ */
+export function TargetBar({ target }: { target: TargetProgress }) {
+  const { kind, status, percent, amount, consumed, remaining, unit, label } = target
+
+  const over = status === 'over'
+  const met = status === 'met'
+  const tone = TONES[target.nutrient] ?? 'neutral'
+
+  const caption = over
+    ? `${round(Math.abs(remaining))}${unit} over`
+    : met
+      ? 'goal met'
+      : kind === 'budget'
+        ? `${round(remaining)}${unit} left`
+        : `${round(remaining)}${unit} to go`
 
   return (
     <div className="target">
       <div className="target-head">
-        <span>{label}</span>
+        <span className="target-label">
+          {label}
+          <span className={`kind-tag kind-${kind}`}>{kind}</span>
+        </span>
         <span className="target-value">
-          {round(value)}
-          {unit}
-          {target ? (
-            <span className="muted">
-              {' '}
-              / {round(target)}
-              {unit}
-            </span>
-          ) : null}
+          {round(consumed)}
+          <span className="muted">
+            {' / '}
+            {round(amount)}
+            {unit}
+          </span>
         </span>
       </div>
-      <div className="bar" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-        <div className={`bar-fill bar-${tone} ${over ? 'bar-over' : ''}`} style={{ width: `${pct}%` }} />
+      <div
+        className="bar"
+        role="progressbar"
+        aria-label={`${label} ${kind}`}
+        aria-valuenow={Math.round(percent)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className={`bar-fill bar-${tone} ${over ? 'bar-over' : ''} ${met ? 'bar-met' : ''}`}
+          style={{ width: `${Math.min(100, percent)}%` }}
+        />
       </div>
+      <span className={`target-caption ${over ? 'over' : met ? 'good' : 'muted'}`}>{caption}</span>
+    </div>
+  )
+}
+
+/** The set of targets for a day, or a prompt to set some. */
+export function TargetList({ targets }: { targets: TargetProgress[] }) {
+  if (targets.length === 0) {
+    return (
+      <p className="note">
+        No goals or budgets set yet — <Link to="/settings">add them in Settings</Link> to track
+        progress.
+      </p>
+    )
+  }
+  return (
+    <div className="targets">
+      {targets.map((t) => (
+        <TargetBar key={t.nutrient} target={t} />
+      ))}
     </div>
   )
 }

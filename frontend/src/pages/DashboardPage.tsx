@@ -13,7 +13,7 @@ import {
 import { api } from '../api/endpoints'
 import { useAuth } from '../lib/auth'
 import { addDays, kcal, kg, shortDate, signed, today } from '../lib/format'
-import { Card, ErrorNote, MacroRow, Spinner, TargetBar } from '../components/ui'
+import { Card, ErrorNote, MacroRow, Spinner, TargetList } from '../components/ui'
 
 export default function DashboardPage() {
   const { user } = useAuth()
@@ -30,6 +30,8 @@ export default function DashboardPage() {
     queryFn: () => api.listWeights({ from, to }),
   })
   const stats = useQuery({ queryKey: ['weights', 'stats', from, to], queryFn: () => api.weightStats({ from, to }) })
+
+  const calorieStatus = day.data?.targets.find((t) => t.nutrient === 'calories_kcal')
 
   // recharts wants oldest-first; the API returns newest-first for list views.
   const weightSeries = (weights.data ?? [])
@@ -64,35 +66,15 @@ export default function DashboardPage() {
             <>
               <div className="big-number">
                 <strong>{kcal(day.data.total.calories_kcal)}</strong>
-                {day.data.remaining_kcal != null && (
-                  <span className={day.data.remaining_kcal < 0 ? 'muted over' : 'muted'}>
-                    {day.data.remaining_kcal < 0
-                      ? `${kcal(Math.abs(day.data.remaining_kcal))} over`
-                      : `${kcal(day.data.remaining_kcal)} left`}
+                {calorieStatus && (
+                  <span className={calorieStatus.status === 'over' ? 'muted over' : 'muted'}>
+                    {calorieStatus.status === 'over'
+                      ? `${kcal(Math.abs(calorieStatus.remaining))} over`
+                      : `${kcal(calorieStatus.remaining)} left`}
                   </span>
                 )}
               </div>
-              <div className="targets">
-                <TargetBar
-                  label="Protein"
-                  value={day.data.total.protein_g}
-                  target={day.data.targets.protein_g}
-                  tone="p"
-                />
-                <TargetBar
-                  label="Carbs"
-                  value={day.data.total.carbs_g}
-                  target={day.data.targets.carbs_g}
-                  tone="c"
-                />
-                <TargetBar label="Fat" value={day.data.total.fat_g} target={day.data.targets.fat_g} tone="f" />
-              </div>
-              {!day.data.targets.calories_kcal && (
-                <p className="note">
-                  No daily targets set yet — <Link to="/settings">add them in Settings</Link> to
-                  track progress.
-                </p>
-              )}
+              <TargetList targets={day.data.targets} />
             </>
           )}
         </Card>

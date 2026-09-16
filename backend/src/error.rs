@@ -96,19 +96,92 @@ impl IntoResponse for ApiError {
 
 impl From<validator::ValidationErrors> for ApiError {
     fn from(e: validator::ValidationErrors) -> Self {
-        let detail = e
-            .field_errors()
-            .iter()
-            .map(|(field, errs)| {
+        let mut out = Vec::new();
+        flatten(&e, "", &mut out);
+        ApiError::BadRequest(out.join("; "))
+    }
+}
+
+/// Flatten validation errors into `field must be …` strings.
+///
+/// `ValidationErrors::field_errors()` only reports errors on the struct's own
+/// fields. Errors from `#[validate(nested)]` sit under `Struct`/`List` kinds,
+/// so a bad value inside a collection produced an empty message. Walking the
+/// tree gives a path like `targets[0].amount` instead of nothing at all.
+fn flatten(errors: &validator::ValidationErrors, path: &str, out: &mut Vec<String>) {
+    use validator::ValidationErrorsKind;
+
+    let join = |field: &str| {
+        if path.is_empty() {
+            field.to_string()
+        } else {
+            format!("{path}.{field}")
+        }
+    };
+
+    for (field, kind) in errors.errors() {
+        match kind {
+            ValidationErrorsKind::Field(errs) => {
                 let reason = errs
                     .first()
                     .and_then(|v| v.message.clone())
                     .map(|m| m.to_string())
                     .unwrap_or_else(|| "is invalid".into());
-                format!("{field} {reason}")
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        ApiError::BadRequest(detail)
+                out.push(format!("{} {}", join(field), reason));
+            }
+            ValidationErrorsKind::Struct(inner) => flatten(inner, &join(field), out),
+            ValidationErrorsKind::List(items) => {
+                for (index, inner) in items {
+                    flatten(inner, &format!("{}[{}]", join(field), index), out);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Serialize;
+    use validator::Validate;
+
+    #[derive(Debug, Serialize, Validate)]
+    struct Item {
+        #[validate(range(min = 1.0, message = "must be at least 1"))]
+        amount: f64,
+    }
+
+    #[derive(Debug, Validate)]
+    struct Payload {
+        #[validate(nested)]
+        items: Vec<Item>,
+        #[validate(length(min = 1, message = "must not be empty"))]
+        name: String,
+    }
+
+    #[test]
+    fn reports_errors_nested_inside_a_list() {
+        let payload = Payload {
+            items: vec![Item { amount: 5.0 }, Item { amount: -2.0 }],
+            name: "ok".into(),
+        };
+        let err: ApiError = payload.validate().unwrap_err().into();
+        match err {
+            ApiError::BadRequest(msg) => assert_eq!(msg, "items[1].amount must be at least 1"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn still_reports_top_level_field_errors() {
+        let payload = Payload {
+            items: vec![],
+            name: String::new(),
+        };
+        let err: ApiError = payload.validate().unwrap_err().into();
+        match err {
+            ApiError::BadRequest(msg) => assert_eq!(msg, "name must not be empty"),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

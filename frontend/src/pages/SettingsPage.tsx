@@ -4,8 +4,8 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../api/endpoints'
 import type { Profile } from '../api/types'
 import { useAuth } from '../lib/auth'
-import { round } from '../lib/format'
 import { Card, ErrorNote, Spinner } from '../components/ui'
+import TargetsEditor from '../components/TargetsEditor'
 
 const ACTIVITY = [
   { value: 'sedentary', label: 'Sedentary (desk job, little exercise)', factor: 1.2 },
@@ -70,12 +70,14 @@ export default function SettingsPage() {
     const calories = Math.round(bmr * factor + adjust)
 
     // 2 g protein/kg on a cut (protects lean mass), 1.6 otherwise; 25% of
-    // calories from fat; carbohydrate fills the remainder.
+    // calories from fat; carbohydrate fills the remainder. Fibre scales with
+    // intake at the usual ~14 g per 1000 kcal.
     const protein = Math.round(weight * (form.goal === 'cut' ? 2.0 : 1.6))
     const fat = Math.round((calories * 0.25) / 9)
     const carbs = Math.round((calories - protein * 4 - fat * 9) / 4)
+    const fiber = Math.round((calories / 1000) * 14)
 
-    return { calories, protein, fat, carbs: Math.max(carbs, 0) }
+    return { calories, protein, fat, carbs: Math.max(carbs, 0), fiber }
   })()
 
   if (profile.isLoading) return <Spinner />
@@ -84,10 +86,9 @@ export default function SettingsPage() {
     <div className="page">
       <div className="page-head">
         <h1>Settings</h1>
-        {saved && <span className="note note-ok">Saved</span>}
       </div>
 
-      <Card title="Profile">
+      <Card title="Profile" action={saved ? <span className="note note-ok">Saved</span> : null}>
         <div className="form-grid">
           <label className="field">
             <span>Name</span>
@@ -150,107 +151,22 @@ export default function SettingsPage() {
             </select>
           </label>
         </div>
-      </Card>
 
-      <Card title="Daily targets">
-        {suggestion && (
-          <div className="note note-ok suggestion">
-            <div>
-              <strong>Suggested:</strong> {suggestion.calories} kcal · P {suggestion.protein} g · C{' '}
-              {suggestion.carbs} g · F {suggestion.fat} g
-              <br />
-              <span className="muted small">
-                Mifflin-St Jeor BMR × activity, adjusted for your goal. An estimate — adjust to what
-                the scale actually does.
-              </span>
-            </div>
-            <button
-              type="button"
-              className="button button-small"
-              onClick={() =>
-                setForm((f) => ({
-                  ...f,
-                  daily_calorie_target: suggestion.calories,
-                  daily_protein_target_g: suggestion.protein,
-                  daily_carbs_target_g: suggestion.carbs,
-                  daily_fat_target_g: suggestion.fat,
-                }))
-              }
-            >
-              Use these
-            </button>
-          </div>
-        )}
-        {!suggestion && (
-          <p className="muted small">
-            Set your height, date of birth and log a weight to get a suggested calorie target.
-          </p>
-        )}
-
-        <div className="form-grid">
-          <label className="field">
-            <span>Calories (kcal)</span>
-            <input
-              type="number"
-              step="any"
-              value={form.daily_calorie_target ?? ''}
-              onChange={num('daily_calorie_target')}
-            />
-          </label>
-          <label className="field">
-            <span>Protein (g)</span>
-            <input
-              type="number"
-              step="any"
-              value={form.daily_protein_target_g ?? ''}
-              onChange={num('daily_protein_target_g')}
-            />
-          </label>
-          <label className="field">
-            <span>Carbs (g)</span>
-            <input
-              type="number"
-              step="any"
-              value={form.daily_carbs_target_g ?? ''}
-              onChange={num('daily_carbs_target_g')}
-            />
-          </label>
-          <label className="field">
-            <span>Fat (g)</span>
-            <input
-              type="number"
-              step="any"
-              value={form.daily_fat_target_g ?? ''}
-              onChange={num('daily_fat_target_g')}
-            />
-          </label>
+        <ErrorNote error={save.error} />
+        <div className="form-actions">
+          <button
+            type="button"
+            className="button button-primary"
+            disabled={save.isPending}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending ? 'Saving…' : 'Save profile'}
+          </button>
+          <span className="muted small">Goals and budgets have their own Save below.</span>
         </div>
-
-        {form.daily_calorie_target && (
-          <p className="muted small">
-            Macros account for{' '}
-            {round(
-              ((form.daily_protein_target_g ?? 0) * 4 +
-                (form.daily_carbs_target_g ?? 0) * 4 +
-                (form.daily_fat_target_g ?? 0) * 9),
-              0,
-            )}{' '}
-            of {round(form.daily_calorie_target, 0)} kcal.
-          </p>
-        )}
       </Card>
 
-      <ErrorNote error={save.error} />
-      <div className="form-actions">
-        <button
-          type="button"
-          className="button button-primary"
-          disabled={save.isPending}
-          onClick={() => save.mutate()}
-        >
-          {save.isPending ? 'Saving…' : 'Save settings'}
-        </button>
-      </div>
+      <TargetsEditor suggestion={suggestion} />
     </div>
   )
 }

@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -10,6 +10,7 @@ use validator::Validate;
 use crate::auth::CurrentUser;
 use crate::domain::weight::{PatchWeightRequest, UpsertWeightRequest, WeightEntry, WeightStats};
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {

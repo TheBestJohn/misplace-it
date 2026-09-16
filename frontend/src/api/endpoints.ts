@@ -10,10 +10,13 @@ import type {
   Food,
   FoodDetail,
   Health,
+  Nutrient,
+  NutritionTarget,
   Profile,
   Recipe,
   RecipeSummary,
   WeightEntry,
+  TargetKind,
   WeightStats,
 } from './types'
 
@@ -29,6 +32,12 @@ export interface RecipeInput {
   instructions?: string | null
   servings: number
   items: RecipeItemInput[]
+}
+
+export interface TargetInput {
+  nutrient: Nutrient
+  amount: number
+  kind: TargetKind
 }
 
 export interface FoodInput {
@@ -59,6 +68,12 @@ export const api = {
   getProfile: () => request<Profile>('/profile'),
   updateProfile: (body: Partial<Profile>) =>
     request<Profile>('/profile', { method: 'PATCH', body }),
+
+  listTargets: () => request<NutritionTarget[]>('/targets'),
+  replaceTargets: (targets: TargetInput[]) =>
+    request<NutritionTarget[]>('/targets', { method: 'PUT', body: { targets } }),
+  deleteTarget: (nutrient: Nutrient) =>
+    request<void>(`/targets/${nutrient}`, { method: 'DELETE' }),
 
   listWeights: (query: { from?: string; to?: string; limit?: number } = {}) =>
     request<WeightEntry[]>('/weights', { query }),

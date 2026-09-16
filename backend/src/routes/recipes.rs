@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use serde::Deserialize;
 use utoipa::IntoParams;
 use uuid::Uuid;
@@ -13,6 +13,7 @@ use crate::domain::recipe::{
     Recipe, RecipeItem, RecipeItemRow, RecipeRow, RecipeSummary, UpsertRecipeRequest,
 };
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {

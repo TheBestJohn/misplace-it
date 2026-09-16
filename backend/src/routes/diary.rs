@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use chrono::{Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -10,11 +10,13 @@ use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::diary::{
-    CreateDiaryEntryRequest, DailyTotal, DayTargets, DiaryDay, DiaryEntry, DiaryRow, DiarySummary,
-    MealGroup, PatchDiaryEntryRequest,
+    CreateDiaryEntryRequest, DailyTotal, DiaryDay, DiaryEntry, DiaryRow, DiarySummary, MealGroup,
+    PatchDiaryEntryRequest,
 };
 use crate::domain::nutrients::Nutrients;
+use crate::domain::target::TargetProgress;
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -161,28 +163,22 @@ pub async fn day(
         })
         .collect();
 
-    let targets: (Option<f64>, Option<f64>, Option<f64>, Option<f64>) = sqlx::query_as(
-        "SELECT daily_calorie_target, daily_protein_target_g, daily_carbs_target_g,
-                daily_fat_target_g
-         FROM users WHERE id = $1",
-    )
-    .bind(user.id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(ApiError::NotFound("user"))?;
-
     let total = total.rounded();
+
+    // Each target is evaluated against the day's total in its own direction:
+    // a budget reports what is left before the ceiling, a goal reports what is
+    // still needed to reach the floor.
+    let targets = super::targets::load_targets(&state, user.id)
+        .await?
+        .into_iter()
+        .map(|t| TargetProgress::evaluate(t.nutrient, t.amount, t.kind, &total))
+        .collect();
+
     Ok(Json(DiaryDay {
         date,
         meals,
-        remaining_kcal: targets.0.map(|t| round2(t - total.calories_kcal)),
         total,
-        targets: DayTargets {
-            calories_kcal: targets.0,
-            protein_g: targets.1,
-            carbs_g: targets.2,
-            fat_g: targets.3,
-        },
+        targets,
     }))
 }
 
@@ -477,8 +473,4 @@ fn normalize_meal(meal: Option<&str>) -> String {
         .filter(|m| !m.is_empty())
         .map(|m| m.to_lowercase())
         .unwrap_or_else(|| "snack".to_string())
-}
-
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
 }

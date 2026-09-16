@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -11,6 +11,7 @@ use crate::domain::food::{
     FoodSearchQuery, UpsertFoodRequest,
 };
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {

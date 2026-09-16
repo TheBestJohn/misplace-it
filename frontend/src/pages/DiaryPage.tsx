@@ -5,7 +5,7 @@ import { api } from '../api/endpoints'
 import type { Food, RecipeSummary } from '../api/types'
 import { addDays, grams, kcal, prettyDate, round, titleCase, today } from '../lib/format'
 import FoodPicker from '../components/FoodPicker'
-import { Card, ErrorNote, MacroRow, Modal, Spinner, TargetBar } from '../components/ui'
+import { Card, ErrorNote, MacroRow, Modal, Spinner, TargetList } from '../components/ui'
 
 const MEALS = ['breakfast', 'lunch', 'dinner', 'snack']
 
@@ -24,8 +24,9 @@ export default function DiaryPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['diary'] }),
   })
 
-  const total = day.data?.total
-  const targets = day.data?.targets
+  // The headline number is the calorie target when one exists; every other
+  // target is rendered uniformly by TargetList below.
+  const calorieStatus = day.data?.targets.find((t) => t.nutrient === 'calories_kcal')
 
   return (
     <div className="page">
@@ -50,25 +51,20 @@ export default function DiaryPage() {
       {day.isLoading && <Spinner />}
       <ErrorNote error={day.error} />
 
-      {total && (
+      {day.data && (
         <Card title={prettyDate(date)}>
           <div className="day-total">
             <div className="big-number">
-              <strong>{kcal(total.calories_kcal)}</strong>
-              {day.data?.remaining_kcal != null && (
-                <span className={day.data.remaining_kcal < 0 ? 'muted over' : 'muted'}>
-                  {day.data.remaining_kcal < 0
-                    ? `${kcal(Math.abs(day.data.remaining_kcal))} over target`
-                    : `${kcal(day.data.remaining_kcal)} left`}
+              <strong>{kcal(day.data.total.calories_kcal)}</strong>
+              {calorieStatus && (
+                <span className={calorieStatus.status === 'over' ? 'muted over' : 'muted'}>
+                  {calorieStatus.status === 'over'
+                    ? `${kcal(Math.abs(calorieStatus.remaining))} over budget`
+                    : `${kcal(calorieStatus.remaining)} left`}
                 </span>
               )}
             </div>
-            <div className="targets">
-              <TargetBar label="Calories" value={total.calories_kcal} target={targets?.calories_kcal} unit=" kcal" tone="kcal" />
-              <TargetBar label="Protein" value={total.protein_g} target={targets?.protein_g} tone="p" />
-              <TargetBar label="Carbs" value={total.carbs_g} target={targets?.carbs_g} tone="c" />
-              <TargetBar label="Fat" value={total.fat_g} target={targets?.fat_g} tone="f" />
-            </div>
+            <TargetList targets={day.data.targets} />
           </div>
         </Card>
       )}

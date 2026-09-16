@@ -17,10 +17,6 @@ pub struct UserRow {
     pub activity_level: String,
     pub goal: String,
     pub target_weight_kg: Option<f64>,
-    pub daily_calorie_target: Option<f64>,
-    pub daily_protein_target_g: Option<f64>,
-    pub daily_carbs_target_g: Option<f64>,
-    pub daily_fat_target_g: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -35,10 +31,6 @@ pub struct Profile {
     pub activity_level: String,
     pub goal: String,
     pub target_weight_kg: Option<f64>,
-    pub daily_calorie_target: Option<f64>,
-    pub daily_protein_target_g: Option<f64>,
-    pub daily_carbs_target_g: Option<f64>,
-    pub daily_fat_target_g: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -54,10 +46,6 @@ impl From<UserRow> for Profile {
             activity_level: u.activity_level,
             goal: u.goal,
             target_weight_kg: u.target_weight_kg,
-            daily_calorie_target: u.daily_calorie_target,
-            daily_protein_target_g: u.daily_protein_target_g,
-            daily_carbs_target_g: u.daily_carbs_target_g,
-            daily_fat_target_g: u.daily_fat_target_g,
             created_at: u.created_at,
         }
     }
@@ -100,12 +88,4 @@ pub struct UpdateProfileRequest {
     pub goal: Option<String>,
     #[validate(range(min = 20.0, max = 500.0, message = "must be between 20 and 500 kg"))]
     pub target_weight_kg: Option<f64>,
-    #[validate(range(min = 0.0, max = 20000.0, message = "is out of range"))]
-    pub daily_calorie_target: Option<f64>,
-    #[validate(range(min = 0.0, max = 2000.0, message = "is out of range"))]
-    pub daily_protein_target_g: Option<f64>,
-    #[validate(range(min = 0.0, max = 2000.0, message = "is out of range"))]
-    pub daily_carbs_target_g: Option<f64>,
-    #[validate(range(min = 0.0, max = 2000.0, message = "is out of range"))]
-    pub daily_fat_target_g: Option<f64>,
 }

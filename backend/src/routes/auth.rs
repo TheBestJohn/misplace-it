@@ -1,11 +1,12 @@
 use axum::extract::State;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use validator::Validate;
 
 use crate::auth::{hash_password, issue_token, verify_password, CurrentUser};
 use crate::domain::user::{AuthResponse, LoginRequest, Profile, RegisterRequest, UserRow};
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -17,9 +18,7 @@ pub fn router() -> Router<AppState> {
 
 const USER_COLUMNS: &str = r#"
     id, email, password_hash, display_name, sex, birth_date, height_cm,
-    activity_level, goal, target_weight_kg, daily_calorie_target,
-    daily_protein_target_g, daily_carbs_target_g, daily_fat_target_g,
-    created_at, updated_at
+    activity_level, goal, target_weight_kg, created_at, updated_at
 "#;
 
 #[utoipa::path(

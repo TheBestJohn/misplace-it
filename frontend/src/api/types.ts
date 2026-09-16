@@ -19,11 +19,47 @@ export interface Profile {
   activity_level: string
   goal: string
   target_weight_kg: number | null
-  daily_calorie_target: number | null
-  daily_protein_target_g: number | null
-  daily_carbs_target_g: number | null
-  daily_fat_target_g: number | null
   created_at: string
+}
+
+/** Nutrients a target can be set on. Mirrors the server's vocabulary. */
+export type Nutrient =
+  | 'calories_kcal'
+  | 'protein_g'
+  | 'carbs_g'
+  | 'fat_g'
+  | 'fiber_g'
+  | 'sugar_g'
+  | 'saturated_fat_g'
+  | 'sodium_mg'
+
+/**
+ * Which way a target points.
+ * - `goal`   — a floor. Hit at least this. Exceeding it is fine.
+ * - `budget` — a ceiling. Stay under this. Exceeding it is over-budget.
+ */
+export type TargetKind = 'goal' | 'budget'
+
+export interface NutritionTarget {
+  nutrient: Nutrient
+  amount: number
+  kind: TargetKind
+  label: string
+  unit: string
+}
+
+export interface TargetProgress {
+  nutrient: Nutrient
+  label: string
+  unit: string
+  kind: TargetKind
+  amount: number
+  consumed: number
+  /** Always `amount - consumed`, signed: negative means past the number. */
+  remaining: number
+  percent: number
+  /** `under` | `over` for a budget, `short` | `met` for a goal. */
+  status: 'under' | 'over' | 'short' | 'met'
 }
 
 export interface AuthResponse {
@@ -169,13 +205,8 @@ export interface DiaryDay {
   date: string
   meals: MealGroup[]
   total: Nutrients
-  targets: {
-    calories_kcal: number | null
-    protein_g: number | null
-    carbs_g: number | null
-    fat_g: number | null
-  }
-  remaining_kcal: number | null
+  /** Progress against each target that is set, in display order. */
+  targets: TargetProgress[]
 }
 
 export interface DailyTotal {

@@ -2,6 +2,7 @@ mod auth;
 mod config;
 mod domain;
 mod error;
+mod extract;
 mod openapi;
 mod routes;
 mod services;

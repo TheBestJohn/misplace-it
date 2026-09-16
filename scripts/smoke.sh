@@ -46,10 +46,32 @@ status "reject wrong password"   401 -X POST "$BASE/auth/login"    -H 'content-t
 status "reject missing token"    401 "$BASE/weights"
 
 echo "== profile"
-expect "set daily targets" \
+expect "update profile" \
   "$(curl -fsS -X PATCH "$BASE/profile" -H "$AUTH" -H 'content-type: application/json' \
-      -d '{"height_cm":180,"daily_calorie_target":2200,"daily_protein_target_g":160}' | j "['daily_calorie_target']")" \
-  "2200.0"
+      -d '{"height_cm":180,"target_weight_kg":78}' | j "['height_cm']")" \
+  "180.0"
+
+echo "== goals and budgets"
+# A budget is a ceiling, a goal is a floor. The same arithmetic, read in
+# opposite directions -- which is the whole point of storing the direction.
+curl -fsS -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' -d '{"targets":[
+  {"nutrient":"calories_kcal","amount":2200,"kind":"budget"},
+  {"nutrient":"protein_g","amount":160,"kind":"goal"},
+  {"nutrient":"fiber_g","amount":30}]}' >/dev/null
+expect "targets stored"              "$(curl -fsS "$BASE/targets" -H "$AUTH" | j " and len(d)")" "3"
+expect "kind defaults per nutrient"  "$(curl -fsS "$BASE/targets/fiber_g" -H "$AUTH" | j "['kind']")" "goal"
+expect "calories default to budget"  "$(curl -fsS "$BASE/targets/calories_kcal" -H "$AUTH" | j "['kind']")" "budget"
+
+status "reject a duplicate nutrient" 400 -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' -d '{"targets":[{"nutrient":"protein_g","amount":1},{"nutrient":"protein_g","amount":2}]}'
+status "reject a negative amount"    400 -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' -d '{"targets":[{"nutrient":"protein_g","amount":-5}]}'
+status "reject an unknown nutrient"  400 -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' -d '{"targets":[{"nutrient":"vitamin_q","amount":5}]}'
+status "reject an unknown kind"      400 -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' -d '{"targets":[{"nutrient":"protein_g","amount":5,"kind":"wish"}]}'
+
+# Every error, including a body the server could not deserialize, uses the
+# same JSON shape. Axum's own rejection would be plain text with a 422.
+expect "malformed bodies use the standard error shape" \
+  "$(curl -s -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' -d '{"weight_kg":' | j "['error']")" \
+  "bad_request"
 
 echo "== weights"
 curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' -d '{"recorded_on":"2026-01-01","weight_kg":84.2}' >/dev/null
@@ -100,8 +122,28 @@ curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
 
 DAY=$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH")
 expect "day total (recipe + food)" "$(echo "$DAY" | j "['total']['calories_kcal']")" "438.53"
-expect "remaining against target"  "$(echo "$DAY" | j "['remaining_kcal']")"          "1761.47"
 expect "grouped into four meals"   "$(echo "$DAY" | j " and len(d['meals'])")"        "4"
+
+# 438.53 kcal against a 2200 budget: under, with 1761.47 left.
+expect "calorie budget reports what is left" \
+  "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='calories_kcal'][0]['remaining']")" "1761.47"
+expect "calorie budget is under"   "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='calories_kcal'][0]['status']")" "under"
+# 13.33 g protein (12.04 from the recipe serving + 1.29 from the banana)
+# against a 160 g goal: short, 146.67 g still needed.
+expect "protein goal reports what is still needed" \
+  "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='protein_g'][0]['remaining']")" "146.67"
+expect "protein goal is short"     "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='protein_g'][0]['status']")" "short"
+
+# The distinction that matters: blow a budget and it is over; pass a goal and
+# it is met, not flagged.
+curl -fsS -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"targets":[{"nutrient":"calories_kcal","amount":300,"kind":"budget"},{"nutrient":"protein_g","amount":5,"kind":"goal"}]}' >/dev/null
+DAY=$(curl -fsS "$BASE/diary/day?date=2026-01-15" -H "$AUTH")
+expect "an exceeded budget is over" "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='calories_kcal'][0]['status']")" "over"
+expect "an exceeded goal is met"    "$(echo "$DAY" | j " and [t for t in d['targets'] if t['nutrient']=='protein_g'][0]['status']")"     "met"
+
+status "clear one target"        204 -X DELETE "$BASE/targets/protein_g" -H "$AUTH"
+status "clearing it twice 404s"  404 -X DELETE "$BASE/targets/protein_g" -H "$AUTH"
 
 SUM=$(curl -fsS "$BASE/diary/summary?from=2026-01-01&to=2026-01-31" -H "$AUTH")
 expect "summary counts logged days only" "$(echo "$SUM" | j "['logged_day_count']")" "1"
@@ -120,7 +162,7 @@ status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 20 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 22 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then

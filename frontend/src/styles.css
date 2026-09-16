@@ -199,16 +199,52 @@ textarea { resize: vertical; }
 .macro-f { color: var(--f); }
 .macros-compact .macro { font-size: 0.82rem; }
 
-.targets { display: flex; flex-direction: column; gap: 10px; }
-.target-head { display: flex; justify-content: space-between; font-size: 0.85rem; }
-.target-value { font-variant-numeric: tabular-nums; }
+.targets { display: flex; flex-direction: column; gap: 12px; }
+.target { display: flex; flex-direction: column; gap: 3px; }
+.target-head { display: flex; justify-content: space-between; gap: 10px; font-size: 0.85rem; }
+.target-label { display: flex; align-items: center; gap: 6px; }
+.target-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.target-caption { font-size: 0.76rem; }
+
+/* A goal and a budget read in opposite directions, so the label says which. */
+.kind-tag {
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+}
+.kind-goal   { color: var(--accent-2); border-color: var(--accent-2); }
+.kind-budget { color: var(--accent-3); border-color: var(--accent-3); }
+
 .bar { height: 7px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 999px; background: var(--accent); transition: width 0.25s ease; }
+.bar-neutral { background: var(--muted); }
 .bar-p { background: var(--p); }
 .bar-c { background: var(--c); }
 .bar-f { background: var(--f); }
+/* Only a blown budget is a warning; a goal that has been reached is a win. */
 .bar-over { background: var(--danger); }
+.bar-met  { background: var(--good); }
 @media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
+
+/* ---------- targets editor ---------- */
+.target-rows { display: flex; flex-direction: column; }
+.target-row {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 1fr 120px auto auto;
+  padding: 9px 0; border-bottom: 1px solid var(--line);
+}
+.target-row:last-child { border-bottom: 0; }
+.target-row-off .target-row-label { color: var(--muted); }
+.target-row-label { font-weight: 550; font-size: 0.9rem; }
+.target-row-amount { display: flex; align-items: center; gap: 5px; }
+.target-row-amount input { text-align: right; font-variant-numeric: tabular-nums; }
+.target-row .segmented button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@media (max-width: 560px) {
+  .target-row { grid-template-columns: 1fr auto; row-gap: 6px; }
+  .target-row-label { grid-column: 1 / -1; }
+  .target-row .segmented { justify-self: end; }
+  .target-row > .icon-button { grid-column: 2; justify-self: end; }
+}
 
 .big-number { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .big-number strong { font-size: 1.85rem; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }

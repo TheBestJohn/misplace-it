@@ -6,6 +6,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::nutrients::Nutrients;
+use super::target::TargetProgress;
 
 #[derive(Debug, FromRow)]
 pub struct DiaryRow {
@@ -142,20 +143,13 @@ pub struct MealGroup {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct DayTargets {
-    pub calories_kcal: Option<f64>,
-    pub protein_g: Option<f64>,
-    pub carbs_g: Option<f64>,
-    pub fat_g: Option<f64>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
 pub struct DiaryDay {
     pub date: NaiveDate,
     pub meals: Vec<MealGroup>,
     pub total: Nutrients,
-    pub targets: DayTargets,
-    pub remaining_kcal: Option<f64>,
+    /// Where the day stands against each target the user has set, in display
+    /// order. Empty when no targets are set.
+    pub targets: Vec<TargetProgress>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

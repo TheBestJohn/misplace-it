@@ -17,7 +17,8 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Recipes** | Build from any food in your library; totals and per-serving macros are computed for you and recalculate live as you edit |
 | **Food database** | Your own custom foods plus anything imported from USDA or Open Food Facts |
 | **Barcode lookup** | Type or scan a UPC/EAN and import the product in one click |
-| **Targets** | Set daily calorie/protein/carb/fat goals, or let it suggest them from Mifflin-St Jeor |
+| **Goals & budgets** | Per-nutrient daily targets that point in a direction: a **budget** is a ceiling to stay under, a **goal** is a floor to reach. Covers calories, the three macros, fibre, sugar, saturated fat and sodium |
+| **Accounts** | Email + password sign-up, Argon2id hashing, closable once your accounts exist |
 | **OpenAPI 3.1** | Generated from the handlers, served at `/api/v1/openapi.json` |
 
 ### Where the food data comes from
@@ -113,6 +114,20 @@ so the two quantity columns can never both be set.
 read, which means correcting a food's nutrition retroactively fixes every recipe
 using it, instead of leaving stale copies behind.
 
+**A target carries a direction, not just a number.** A budget and a goal are
+the same arithmetic read in opposite directions: 120% of a calorie budget is a
+problem, 120% of a protein goal is a success. Storing the direction is what lets
+the server say `over` for one and `met` for the other, so every client agrees
+instead of each re-deriving it. Protein and fibre default to goals and the rest
+to budgets, and any of them can be flipped — carbs are a budget when cutting and
+a goal when bulking.
+
+**Targets live in their own table rather than as columns on `users`.** With a
+direction, each nutrient needs an amount and a kind; eight nutrients would mean
+sixteen nullable columns, and adding a ninth would mean another `ALTER TABLE`.
+One row per target makes "which targets are set" a query, and adding a nutrient
+a data concern rather than a schema change.
+
 **Days with nothing logged are excluded from averages.** An unlogged day is
 missing data, not a zero-calorie day; averaging it in would drag every average
 down and misrepresent the week.
@@ -144,6 +159,8 @@ GET    /health
 
 POST   /auth/register            POST   /auth/login             GET  /auth/me
 GET    /profile                  PATCH  /profile
+GET    /targets                  PUT    /targets          # replaces the whole set
+GET    /targets/{nutrient}       DELETE /targets/{nutrient}
 
 GET    /weights                  POST   /weights                GET  /weights/stats
 GET    /weights/{id}             PATCH  /weights/{id}           DELETE /weights/{id}
@@ -166,11 +183,25 @@ GET    /diary/{id}               PATCH  /diary/{id}             DELETE /diary/{i
 
 </details>
 
-Errors are uniform:
+Errors are uniform — including malformed request bodies, which are routed
+through the same error type rather than Axum's plain-text rejection:
 
 ```json
 { "error": "not_found", "message": "food not found" }
+{ "error": "bad_request", "message": "targets[0].amount must be between 0.1 and 100000" }
 ```
+
+A day's targets come back already evaluated, so clients render rather than
+compute:
+
+```json
+{ "nutrient": "protein_g", "label": "Protein", "unit": "g", "kind": "goal",
+  "amount": 160, "consumed": 190, "remaining": -30, "percent": 118.75,
+  "status": "met" }
+```
+
+`remaining` is always `amount - consumed`, signed. `status` is `under`/`over`
+for a budget and `short`/`met` for a goal.
 
 ---
 

@@ -1,11 +1,12 @@
 use axum::extract::State;
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use validator::Validate;
 
 use crate::auth::CurrentUser;
 use crate::domain::user::{Profile, UpdateProfileRequest, UserRow};
 use crate::error::{ApiError, ApiResult};
+use crate::extract::Json;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -14,9 +15,7 @@ pub fn router() -> Router<AppState> {
 
 const USER_COLUMNS: &str = r#"
     id, email, password_hash, display_name, sex, birth_date, height_cm,
-    activity_level, goal, target_weight_kg, daily_calorie_target,
-    daily_protein_target_g, daily_carbs_target_g, daily_fat_target_g,
-    created_at, updated_at
+    activity_level, goal, target_weight_kg, created_at, updated_at
 "#;
 
 #[utoipa::path(
@@ -60,10 +59,6 @@ pub async fn update_profile(
             activity_level = COALESCE($6, activity_level),
             goal = COALESCE($7, goal),
             target_weight_kg = COALESCE($8, target_weight_kg),
-            daily_calorie_target = COALESCE($9, daily_calorie_target),
-            daily_protein_target_g = COALESCE($10, daily_protein_target_g),
-            daily_carbs_target_g = COALESCE($11, daily_carbs_target_g),
-            daily_fat_target_g = COALESCE($12, daily_fat_target_g),
             updated_at = now()
          WHERE id = $1
          RETURNING {USER_COLUMNS}"
@@ -76,10 +71,6 @@ pub async fn update_profile(
     .bind(body.activity_level.as_deref())
     .bind(body.goal.as_deref())
     .bind(body.target_weight_kg)
-    .bind(body.daily_calorie_target)
-    .bind(body.daily_protein_target_g)
-    .bind(body.daily_carbs_target_g)
-    .bind(body.daily_fat_target_g)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("user"))?;
