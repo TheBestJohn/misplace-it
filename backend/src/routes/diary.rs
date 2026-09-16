@@ -334,7 +334,7 @@ pub async fn create(
             })?;
 
             // Ownership/visibility check before insert.
-            super::foods::load_food(&state, user.id, food_id).await?;
+            super::foods::load_food(&state, food_id).await?;
 
             sqlx::query_scalar(
                 "INSERT INTO diary_entries (user_id, logged_on, meal, food_id, quantity_g)

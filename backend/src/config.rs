@@ -14,6 +14,11 @@ pub struct Config {
     pub usda_base_url: String,
     pub off_base_url: String,
     pub allow_registration: bool,
+    /// pg_trgm word-similarity threshold for the fuzzy search tier. Postgres
+    /// defaults to 0.6, which is tuned for matching whole documents and is too
+    /// strict for autocomplete: a one-letter typo in a short query lands around
+    /// 0.5. Lower it and more typos match, at the cost of more noise.
+    pub trgm_word_threshold: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +51,10 @@ impl Config {
             allow_registration: opt("ALLOW_REGISTRATION")
                 .map(|v| v != "false" && v != "0")
                 .unwrap_or(true),
+            trgm_word_threshold: opt("TRGM_WORD_THRESHOLD")
+                .and_then(|v| v.parse().ok())
+                .filter(|v: &f64| (0.0..=1.0).contains(v))
+                .unwrap_or(0.4),
         })
     }
 }

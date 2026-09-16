@@ -39,6 +39,7 @@ use utoipa::{Modify, OpenApi};
         crate::routes::recipes::create,
         crate::routes::recipes::update,
         crate::routes::recipes::delete,
+        crate::routes::search::stream_foods,
         crate::routes::targets::list,
         crate::routes::targets::get_one,
         crate::routes::targets::replace,
@@ -98,6 +99,7 @@ use utoipa::{Modify, OpenApi};
         (name = "foods", description = "Food database, USDA/Open Food Facts lookup, barcodes"),
         (name = "recipes", description = "Recipes and computed macros"),
         (name = "targets", description = "Daily goals (floors) and budgets (ceilings)"),
+        (name = "search", description = "Streaming, fuzzy food search"),
         (name = "diary", description = "Calorie and macro logging"),
     )
 )]

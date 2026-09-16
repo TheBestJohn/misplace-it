@@ -38,6 +38,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
+async-stream = "0.3"
+futures = { version = "0.3", default-features = false, features = ["std"] }
 validator = { version = "0.19", features = ["derive"] }
 
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }

@@ -7,15 +7,11 @@ use validator::Validate;
 
 use super::nutrients::Nutrients;
 
+/// The write paths only need the id back; everything a client reads is
+/// assembled by `load_recipe`, which joins the author in.
 #[derive(Debug, FromRow)]
 pub struct RecipeRow {
     pub id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub instructions: Option<String>,
-    pub servings: f64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, FromRow)]
@@ -74,6 +70,12 @@ pub struct RecipeSummary {
     pub name: String,
     pub description: Option<String>,
     pub servings: f64,
+    /// Shared with every account when true.
+    pub is_public: bool,
+    /// Whether the caller owns it — only an owner may edit or delete.
+    pub is_owner: bool,
+    /// Who wrote it, shown on recipes you do not own.
+    pub author: Option<String>,
     pub total_weight_g: f64,
     pub item_count: i64,
     pub per_serving: Nutrients,
@@ -88,6 +90,9 @@ pub struct Recipe {
     pub description: Option<String>,
     pub instructions: Option<String>,
     pub servings: f64,
+    pub is_public: bool,
+    pub is_owner: bool,
+    pub author: Option<String>,
     pub total_weight_g: f64,
     pub items: Vec<RecipeItem>,
     pub total: Nutrients,
@@ -119,6 +124,9 @@ pub struct UpsertRecipeRequest {
     pub instructions: Option<String>,
     #[validate(range(min = 0.1, max = 1000.0, message = "must be between 0.1 and 1000"))]
     pub servings: f64,
+    /// Share this recipe with every account. Private by default.
+    #[serde(default)]
+    pub is_public: bool,
     #[validate(nested)]
     #[validate(length(min = 1, message = "must contain at least one ingredient"))]
     pub items: Vec<RecipeItemInput>,

@@ -35,9 +35,21 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env()?;
 
+    // `<%` reads its threshold from a session GUC, so it has to be set on each
+    // pooled connection rather than passed per query.
+    let trgm_threshold = config.trgm_word_threshold;
     let db = PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(10))
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SELECT set_config('pg_trgm.word_similarity_threshold', $1, false)")
+                    .bind(trgm_threshold.to_string())
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&config.database_url)
         .await?;
 

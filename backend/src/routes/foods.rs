@@ -51,12 +51,12 @@ pub async fn list(
     let offset = q.offset.max(0);
     let term = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
-    // The local food database is shared (imported reference data is useful to
-    // everyone), so visibility is "not user-authored OR authored by me".
+    // The food database is global: a food is a fact about a product, so making
+    // every account re-import the same barcode would be pure duplication.
+    // `created_by` still decides who may edit a row, and drives `mine`.
     let rows: Vec<Food> = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM foods
-         WHERE (created_by IS NULL OR created_by = $1)
-           AND ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR brand ILIKE '%' || $2 || '%')
+         WHERE ($2::text IS NULL OR name ILIKE '%' || $2 || '%' OR brand ILIKE '%' || $2 || '%')
            AND ($3::text IS NULL OR source = $3)
            AND ($4::bool IS FALSE OR created_by = $1)
          ORDER BY
@@ -85,10 +85,10 @@ pub async fn list(
 )]
 pub async fn get_one(
     State(state): State<AppState>,
-    user: CurrentUser,
+    _user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<FoodDetail>> {
-    Ok(Json(load_food(&state, user.id, id).await?.into()))
+    Ok(Json(load_food(&state, id).await?.into()))
 }
 
 #[utoipa::path(
@@ -150,7 +150,7 @@ pub async fn update(
 ) -> ApiResult<Json<FoodDetail>> {
     body.validate()?;
 
-    let existing = load_food(&state, user.id, id).await?;
+    let existing = load_food(&state, id).await?;
     // Imported rows mirror an upstream record; editing them would silently
     // diverge from the source, so only user-authored foods are writable.
     if existing.created_by != Some(user.id) {
@@ -200,7 +200,7 @@ pub async fn delete(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let existing = load_food(&state, user.id, id).await?;
+    let existing = load_food(&state, id).await?;
     if existing.created_by != Some(user.id) {
         return Err(ApiError::Forbidden);
     }
@@ -283,7 +283,7 @@ pub async fn search_external(
 )]
 pub async fn barcode(
     State(state): State<AppState>,
-    user: CurrentUser,
+    _user: CurrentUser,
     Path(upc): Path<String>,
 ) -> ApiResult<Json<BarcodeLookup>> {
     let upc = upc.trim().to_string();
@@ -291,16 +291,15 @@ pub async fn barcode(
         return Err(ApiError::bad_request("barcode must be digits only"));
     }
 
-    // Local hit first — once a barcode has been imported there is no reason to
-    // call out to the network again.
+    // Local hit first — once anyone has imported a barcode there is no reason
+    // to call out to the network again.
     let local: Option<Food> = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM foods
-         WHERE upc = $1 AND (created_by IS NULL OR created_by = $2)
+         WHERE upc = $1
          ORDER BY created_by NULLS LAST
          LIMIT 1"
     ))
     .bind(&upc)
-    .bind(user.id)
     .fetch_optional(&state.db)
     .await?;
 
@@ -443,14 +442,11 @@ pub async fn external_detail(
     Ok(Json(found))
 }
 
-/// Load a food the caller is allowed to see (shared reference data or their own).
-pub async fn load_food(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<Food> {
-    sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM foods WHERE id = $1 AND (created_by IS NULL OR created_by = $2)"
-    ))
-    .bind(id)
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(ApiError::NotFound("food"))
+/// Load a food. Every food is visible to every account; only editing is scoped.
+pub async fn load_food(state: &AppState, id: Uuid) -> ApiResult<Food> {
+    sqlx::query_as(&format!("SELECT {COLUMNS} FROM foods WHERE id = $1"))
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(ApiError::NotFound("food"))
 }

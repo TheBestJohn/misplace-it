@@ -23,12 +23,15 @@ pub fn router() -> Router<AppState> {
 }
 
 const RECIPE_COLUMNS: &str =
-    "id, user_id, name, description, instructions, servings, created_at, updated_at";
+    "id, user_id, name, description, instructions, servings, is_public, created_at, updated_at";
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[serde(default)]
 pub struct ListQuery {
     pub q: Option<String>,
+    /// `mine` (default) lists only your recipes; `public` lists everyone's
+    /// shared ones; `all` lists both.
+    pub scope: Option<String>,
 }
 
 #[utoipa::path(
@@ -43,6 +46,11 @@ pub async fn list(
     Query(q): Query<ListQuery>,
 ) -> ApiResult<Json<Vec<RecipeSummary>>> {
     let term = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let scope = match q.scope.as_deref() {
+        Some("public") => "public",
+        Some("all") => "all",
+        _ => "mine",
+    };
 
     // Aggregate the macros in SQL rather than fetching every ingredient row:
     // the list view only needs totals, and this keeps it to a single query
@@ -50,9 +58,12 @@ pub async fn list(
     #[derive(sqlx::FromRow)]
     struct Row {
         id: Uuid,
+        user_id: Uuid,
         name: String,
         description: Option<String>,
         servings: f64,
+        is_public: bool,
+        author: Option<String>,
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
         item_count: i64,
@@ -69,7 +80,8 @@ pub async fn list(
 
     let rows: Vec<Row> = sqlx::query_as(
         r#"
-        SELECT r.id, r.name, r.description, r.servings, r.created_at, r.updated_at,
+        SELECT r.id, r.user_id, r.name, r.description, r.servings, r.is_public,
+               u.display_name AS author, r.created_at, r.updated_at,
                COALESCE(t.item_count, 0)      AS item_count,
                COALESCE(t.total_weight_g, 0)  AS total_weight_g,
                COALESCE(t.calories_kcal, 0)   AS calories_kcal,
@@ -81,6 +93,7 @@ pub async fn list(
                COALESCE(t.saturated_fat_g, 0) AS saturated_fat_g,
                COALESCE(t.sodium_mg, 0)       AS sodium_mg
         FROM recipes r
+        JOIN users u ON u.id = r.user_id
         LEFT JOIN LATERAL (
             SELECT count(*)                                       AS item_count,
                    sum(ri.quantity_g)                             AS total_weight_g,
@@ -96,13 +109,19 @@ pub async fn list(
             JOIN foods f ON f.id = ri.food_id
             WHERE ri.recipe_id = r.id
         ) t ON TRUE
-        WHERE r.user_id = $1
+        WHERE CASE $3::text
+                WHEN 'public' THEN r.is_public
+                WHEN 'all'    THEN (r.user_id = $1 OR r.is_public)
+                ELSE r.user_id = $1
+              END
           AND ($2::text IS NULL OR r.name ILIKE '%' || $2 || '%')
-        ORDER BY r.updated_at DESC
+        -- Your own first, then everyone's shared ones, newest first within each.
+        ORDER BY (r.user_id = $1) DESC, r.updated_at DESC
         "#,
     )
     .bind(user.id)
     .bind(term)
+    .bind(scope)
     .fetch_all(&state.db)
     .await?;
 
@@ -121,6 +140,9 @@ pub async fn list(
             };
             RecipeSummary {
                 id: r.id,
+                is_owner: r.user_id == user.id,
+                author: (r.user_id != user.id).then_some(r.author).flatten(),
+                is_public: r.is_public,
                 name: r.name,
                 description: r.description,
                 servings: r.servings,
@@ -168,8 +190,8 @@ pub async fn create(
     let mut tx = state.db.begin().await?;
 
     let recipe: RecipeRow = sqlx::query_as(&format!(
-        "INSERT INTO recipes (user_id, name, description, instructions, servings)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO recipes (user_id, name, description, instructions, servings, is_public)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING {RECIPE_COLUMNS}"
     ))
     .bind(user.id)
@@ -177,10 +199,11 @@ pub async fn create(
     .bind(body.description.as_deref())
     .bind(body.instructions.as_deref())
     .bind(body.servings)
+    .bind(body.is_public)
     .fetch_one(&mut *tx)
     .await?;
 
-    insert_items(&mut tx, recipe.id, user.id, &body).await?;
+    insert_items(&mut tx, recipe.id, &body).await?;
     tx.commit().await?;
 
     let full = load_recipe(&state, user.id, recipe.id).await?;
@@ -206,7 +229,7 @@ pub async fn update(
 
     let updated: Option<RecipeRow> = sqlx::query_as(&format!(
         "UPDATE recipes SET name = $3, description = $4, instructions = $5, servings = $6,
-                            updated_at = now()
+                            is_public = $7, updated_at = now()
          WHERE id = $1 AND user_id = $2
          RETURNING {RECIPE_COLUMNS}"
     ))
@@ -216,6 +239,7 @@ pub async fn update(
     .bind(body.description.as_deref())
     .bind(body.instructions.as_deref())
     .bind(body.servings)
+    .bind(body.is_public)
     .fetch_optional(&mut *tx)
     .await?;
 
@@ -230,7 +254,7 @@ pub async fn update(
         .execute(&mut *tx)
         .await?;
 
-    insert_items(&mut tx, id, user.id, &body).await?;
+    insert_items(&mut tx, id, &body).await?;
     tx.commit().await?;
 
     Ok(Json(load_recipe(&state, user.id, id).await?))
@@ -272,7 +296,6 @@ pub async fn delete(
 async fn insert_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     recipe_id: Uuid,
-    user_id: Uuid,
     body: &UpsertRecipeRequest,
 ) -> ApiResult<()> {
     let food_ids: Vec<Uuid> = body.items.iter().map(|i| i.food_id).collect();
@@ -280,20 +303,16 @@ async fn insert_items(
     let notes: Vec<Option<String>> = body.items.iter().map(|i| i.note.clone()).collect();
     let orders: Vec<i32> = (0..body.items.len() as i32).collect();
 
-    // Validate every ingredient in one query rather than one per item. An
-    // explicit visibility check (instead of relying on the foreign key) is what
-    // lets an unknown id come back as a clear 400 naming the id, and it also
-    // stops a recipe referencing another user's private food.
-    let visible: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM foods
-         WHERE id = ANY($1) AND (created_by IS NULL OR created_by = $2)",
-    )
-    .bind(&food_ids)
-    .bind(user_id)
-    .fetch_all(&mut **tx)
-    .await?;
+    // Validate every ingredient in one query rather than one per item. Checking
+    // explicitly (instead of relying on the foreign key) is what lets an unknown
+    // id come back as a clear 400 naming the id rather than an opaque
+    // constraint error. Foods are global, so there is no visibility test.
+    let known: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM foods WHERE id = ANY($1)")
+        .bind(&food_ids)
+        .fetch_all(&mut **tx)
+        .await?;
 
-    if let Some(missing) = food_ids.iter().find(|id| !visible.contains(id)) {
+    if let Some(missing) = food_ids.iter().find(|id| !known.contains(id)) {
         return Err(ApiError::bad_request(format!("unknown food id {missing}")));
     }
 
@@ -315,14 +334,38 @@ async fn insert_items(
 }
 
 pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<Recipe> {
-    let recipe: RecipeRow = sqlx::query_as(&format!(
-        "SELECT {RECIPE_COLUMNS} FROM recipes WHERE id = $1 AND user_id = $2"
-    ))
+    // Visible when you own it or its author shared it. Editing stays owner-only
+    // and is checked separately by the handlers that write.
+    // The author's name is only needed here, so it rides along on a local row
+    // type rather than widening RecipeRow, which the write paths also use and
+    // which never joins `users`.
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        id: Uuid,
+        user_id: Uuid,
+        name: String,
+        description: Option<String>,
+        instructions: Option<String>,
+        servings: f64,
+        is_public: bool,
+        author: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    let recipe: Row = sqlx::query_as(
+        "SELECT r.id, r.user_id, r.name, r.description, r.instructions, r.servings,
+                r.is_public, u.display_name AS author, r.created_at, r.updated_at
+         FROM recipes r JOIN users u ON u.id = r.user_id
+         WHERE r.id = $1 AND (r.user_id = $2 OR r.is_public)",
+    )
     .bind(id)
     .bind(user_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(ApiError::NotFound("recipe"))?;
+
+    let author = recipe.author.clone();
 
     let item_rows: Vec<RecipeItemRow> = sqlx::query_as(
         r#"
@@ -357,8 +400,13 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
         })
         .collect();
 
+    let is_owner = recipe.user_id == user_id;
+
     Ok(Recipe {
         id: recipe.id,
+        is_owner,
+        is_public: recipe.is_public,
+        author: (!is_owner).then_some(author),
         name: recipe.name,
         description: recipe.description,
         instructions: recipe.instructions,

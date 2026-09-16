@@ -3,6 +3,7 @@ pub mod diary;
 pub mod foods;
 pub mod profile;
 pub mod recipes;
+pub mod search;
 pub mod targets;
 pub mod weights;
 
@@ -53,5 +54,6 @@ pub fn api_router() -> Router<AppState> {
         .nest("/foods", foods::router())
         .nest("/recipes", recipes::router())
         .nest("/targets", targets::router())
+        .nest("/search", search::router())
         .nest("/diary", diary::router())
 }

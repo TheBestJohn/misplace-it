@@ -58,7 +58,7 @@ curl -fsS -X PUT "$BASE/targets" -H "$AUTH" -H 'content-type: application/json' 
   {"nutrient":"calories_kcal","amount":2200,"kind":"budget"},
   {"nutrient":"protein_g","amount":160,"kind":"goal"},
   {"nutrient":"fiber_g","amount":30}]}' >/dev/null
-expect "targets stored"              "$(curl -fsS "$BASE/targets" -H "$AUTH" | j " and len(d)")" "3"
+expect "targets stored"              "$(curl -fsS "$BASE/targets" -H "$AUTH" | j ".__len__()")" "3"
 expect "kind defaults per nutrient"  "$(curl -fsS "$BASE/targets/fiber_g" -H "$AUTH" | j "['kind']")" "goal"
 expect "calories default to budget"  "$(curl -fsS "$BASE/targets/calories_kcal" -H "$AUTH" | j "['kind']")" "budget"
 
@@ -77,7 +77,7 @@ echo "== weights"
 curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' -d '{"recorded_on":"2026-01-01","weight_kg":84.2}' >/dev/null
 curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' -d '{"recorded_on":"2026-01-01","weight_kg":84.0}' >/dev/null
 curl -fsS -X POST "$BASE/weights" -H "$AUTH" -H 'content-type: application/json' -d '{"recorded_on":"2026-01-15","weight_kg":82.5,"body_fat_pct":18.4}' >/dev/null
-expect "same date upserts, not duplicates" "$(curl -fsS "$BASE/weights" -H "$AUTH" | j " and len(d)")" "2"
+expect "same date upserts, not duplicates" "$(curl -fsS "$BASE/weights" -H "$AUTH" | j ".__len__()")" "2"
 expect "change over the window"            "$(curl -fsS "$BASE/weights/stats" -H "$AUTH" | j "['change_kg']")" "-1.5"
 WID=$(curl -fsS "$BASE/weights" -H "$AUTH" | j "[0]['id']")
 expect "patch an entry" "$(curl -fsS -X PATCH "$BASE/weights/$WID" -H "$AUTH" -H 'content-type: application/json' -d '{"weight_kg":82.7}' | j "['weight_kg']")" "82.7"
@@ -91,7 +91,7 @@ MILK=$(curl -fsS -X POST "$BASE/foods" -H "$AUTH" -H 'content-type: application/
   -d '{"name":"Whole milk","calories_kcal":61,"protein_g":3.2,"carbs_g":4.8,"fat_g":3.3,"serving_size_g":244}' | j "['id']")
 # 379 kcal/100g x 40 g = 151.6
 expect "per-serving scaling" "$(curl -fsS "$BASE/foods/$OATS" -H "$AUTH" | j "['per_serving']['calories_kcal']")" "151.6"
-expect "search by name"      "$(curl -fsS "$BASE/foods?q=oat" -H "$AUTH" | j "[0]['name']")" "Rolled oats"
+expect "search by name"      "$(curl -fsS "$BASE/foods?q=oat" -H "$AUTH" | j " and ('Rolled oats' in [f['name'] for f in d])")" "True"
 
 BAN=$(curl -fsS -X POST "$BASE/foods/import" -H "$AUTH" -H 'content-type: application/json' \
   -d '{"source":"usda","source_id":"173944","name":"Bananas, raw","calories_kcal":89,"protein_g":1.09,"carbs_g":22.84,"fat_g":0.33,"serving_size_g":118}' | j "['id']")
@@ -156,13 +156,57 @@ expect "patch recipe servings rescales" \
 status "reject both food_id and recipe_id" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' -d "{\"food_id\":\"$BAN\",\"recipe_id\":\"$RID\",\"quantity_g\":10}"
 status "reject neither food_id nor recipe_id" 400 -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' -d '{"quantity_g":10}'
 
+echo "== global foods and recipe visibility"
+# A second account, to check what crosses the boundary between users.
+OTHER_EMAIL="smoke-other-$(date +%s)-$RANDOM@example.test"
+OTHER=$(curl -fsS -X POST "$BASE/auth/register" -H 'content-type: application/json' \
+  -d "{\"email\":\"$OTHER_EMAIL\",\"password\":\"$PASSWORD\",\"display_name\":\"Other\"}" | j "['access_token']")
+OAUTH="Authorization: Bearer $OTHER"
+
+# Foods are global: a food is a fact about a product, so everyone sees it...
+expect "another account sees your custom food" \
+  "$(curl -fsS "$BASE/foods?q=Rolled%20oats" -H "$OAUTH" | j "[0]['name']")" "Rolled oats"
+# ...but only its author may change it.
+status "another account cannot edit your food" 403 -X PUT "$BASE/foods/$OATS" -H "$OAUTH" \
+  -H 'content-type: application/json' -d '{"name":"Hijacked","calories_kcal":1,"protein_g":0,"carbs_g":0,"fat_g":0,"serving_size_g":100}'
+
+# Recipes are the opposite: private until shared.
+PUB=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Shared bowl\",\"servings\":1,\"is_public\":true,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":50}]}" | j "['id']")
+
+status "a private recipe is invisible to others"  404 "$BASE/recipes/$RID" -H "$OAUTH"
+status "a public recipe is visible to others"     200 "$BASE/recipes/$PUB" -H "$OAUTH"
+expect "a public recipe names its author"         "$(curl -fsS "$BASE/recipes/$PUB" -H "$OAUTH" | j "['author']")" "Smoke"
+expect "and is not owned by the reader"           "$(curl -fsS "$BASE/recipes/$PUB" -H "$OAUTH" | j "['is_owner']")" "False"
+status "others cannot edit a public recipe"       404 -X PUT "$BASE/recipes/$PUB" -H "$OAUTH" \
+  -H 'content-type: application/json' -d "{\"name\":\"Hijacked\",\"servings\":1,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":1}]}"
+status "others cannot delete a public recipe"     404 -X DELETE "$BASE/recipes/$PUB" -H "$OAUTH"
+expect "scope=mine excludes others' recipes"      "$(curl -fsS "$BASE/recipes?scope=mine" -H "$OAUTH" | j ".__len__()")" "0"
+expect "scope=public includes them"               "$(curl -fsS "$BASE/recipes?scope=public" -H "$OAUTH" | j " and ('Shared bowl' in [r['name'] for r in d])")" "True"
+
+echo "== streaming fuzzy search"
+# Each tier is flushed as it completes, so the response is a sequence of SSE
+# events rather than one JSON body.
+sse() { curl -fsSN "$BASE/search/foods?q=$1&limit=5" -H "$AUTH"; }
+expect "responds as an event stream" \
+  "$(curl -fsSI -o /dev/null -w '%{content_type}' "$BASE/search/foods?q=oats" -H "$AUTH" 2>/dev/null | cut -d';' -f1)" \
+  "text/event-stream"
+expect "an exact name hits the exact tier"    "$(sse 'Rolled%20oats' | grep -c 'tier":"exact"')"    "1"
+expect "a prefix hits the prefix tier"        "$(sse 'Rolled' | grep -c 'tier":"prefix"')"          "1"
+# Whole-string similarity scores this pair at 0.14 and would miss it; word
+# similarity scores the best-matching word and finds it.
+expect "a typo still finds the food"          "$(sse 'Rolld%20oatz' | grep -c '"tier"')"            "1"
+expect "the stream always ends with done"     "$(sse 'oats' | grep -c 'event: done')"               "1"
+expect "an empty query ends cleanly"          "$(sse '' | grep -c 'event: done')"                   "1"
+expect "a miss returns no tiers"              "$(sse 'zzzzznotafood' | grep -c '"tier"')"           "0"
+
 echo "== referential integrity"
 status "food in use cannot be deleted"   400 -X DELETE "$BASE/foods/$OATS" -H "$AUTH"
 status "recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$RID" -H "$AUTH"
 
 echo "== openapi"
 PATHS=$(curl -fsS "${BASE%/api/v1}/api/v1/openapi.json" | j " and len(d['paths'])")
-if [ "$PATHS" -ge 22 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
+if [ "$PATHS" -ge 23 ]; then pass "spec documents $PATHS paths"; else fail "spec only documents $PATHS paths"; fi
 
 echo
 if [ "$failures" -eq 0 ]; then
