@@ -137,6 +137,55 @@ status "reject unknown ingredient" 400 -X POST "$BASE/recipes" -H "$AUTH" -H 'co
   -d '{"name":"x","servings":1,"items":[{"food_id":"00000000-0000-0000-0000-000000000000","quantity_g":10}]}'
 status "reject empty ingredient list" 400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d '{"name":"x","servings":1,"items":[]}'
 
+echo "== recipes inside recipes"
+# A sub-recipe is linked, not copied: the parent asks the child what it says
+# today. Numbers chosen so the arithmetic is checkable by eye — the sauce is
+# 200 kcal over 4 servings, so one serving is 50.
+SAUCE=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Smoke sauce\",\"servings\":4,
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":100}]}" | j "['id']")
+# 379 kcal/100g x 100 g = 379, over 4 servings = 94.75 per serving.
+expect "the sub-recipe on its own"  "$(curl -fsS "$BASE/recipes/$SAUCE" -H "$AUTH" | j "['per_serving']['calories_kcal']")" "94.75"
+
+DISH=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Smoke dish\",\"servings\":1,
+  \"items\":[{\"food_id\":\"$MILK\",\"quantity_g\":200},
+            {\"sub_recipe_id\":\"$SAUCE\",\"servings\":2}]}")
+DISH_ID=$(echo "$DISH" | j "['id']")
+# 61 kcal/100g x 200 g = 122, plus 2 x 94.75 = 189.5 -> 311.5
+expect "a recipe can be an ingredient"   "$(echo "$DISH" | j "['total']['calories_kcal']")" "311.5"
+expect "the ingredient carries its link" "$(echo "$DISH" | j " and [i['sub_recipe_id'] for i in d['items'] if i['sub_recipe_id']][0]")" "$SAUCE"
+expect "and is named after the recipe"   "$(echo "$DISH" | j " and [i['name'] for i in d['items'] if i['sub_recipe_id']][0]")" "Smoke sauce"
+expect "its weight is the servings taken" "$(echo "$DISH" | j " and [i['weight_g'] for i in d['items'] if i['sub_recipe_id']][0]")" "50.0"
+expect "ingredients are not copied in"   "$(echo "$DISH" | j " and len(d['items'])")" "2"
+
+# The whole point of linking: correcting the sauce corrects everything built on it.
+curl -fsS -X PUT "$BASE/recipes/$SAUCE" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Smoke sauce\",\"servings\":4,
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":200}]}" >/dev/null
+# 758 over 4 = 189.5 per serving; 122 + 2 x 189.5 = 501
+expect "editing the sub-recipe flows through" "$(curl -fsS "$BASE/recipes/$DISH_ID" -H "$AUTH" | j "['total']['calories_kcal']")" "501.0"
+expect "the list view agrees"                 "$(curl -fsS "$BASE/recipes?q=Smoke%20dish" -H "$AUTH" | j "[0]['per_serving']['calories_kcal']")" "501.0"
+
+# Logging the parent must use the same figure the recipe page shows.
+curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"logged_on\":\"2026-02-02\",\"meal\":\"dinner\",\"recipe_id\":\"$DISH_ID\",\"recipe_servings\":1}" >/dev/null
+expect "and the diary agrees with both"       "$(curl -fsS "$BASE/diary/day?date=2026-02-02" -H "$AUTH" | j "['total']['calories_kcal']")" "501.0"
+
+status "a recipe cannot contain itself" 400 -X PUT "$BASE/recipes/$DISH_ID" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Smoke dish\",\"servings\":1,\"items\":[{\"sub_recipe_id\":\"$DISH_ID\",\"servings\":1}]}"
+status "nor a cycle through another"    400 -X PUT "$BASE/recipes/$SAUCE" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Smoke sauce\",\"servings\":4,\"items\":[{\"sub_recipe_id\":\"$DISH_ID\",\"servings\":1}]}"
+status "an ingredient is not both"      400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Both\",\"servings\":1,\"items\":[{\"food_id\":\"$OATS\",\"sub_recipe_id\":\"$SAUCE\",\"quantity_g\":10}]}"
+status "nor neither"                    400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Neither","servings":1,"items":[{"quantity_g":10}]}'
+status "a recipe wants servings, not grams" 400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Wrong unit\",\"servings\":1,\"items\":[{\"sub_recipe_id\":\"$SAUCE\",\"quantity_g\":10}]}"
+status "an unknown sub-recipe is refused" 400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Ghost","servings":1,"items":[{"sub_recipe_id":"00000000-0000-0000-0000-000000000000","servings":1}]}'
+status "a recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$SAUCE" -H "$AUTH"
+
 echo "== diary"
 curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
   -d "{\"logged_on\":\"2026-01-15\",\"meal\":\"breakfast\",\"recipe_id\":\"$RID\",\"recipe_servings\":1}" >/dev/null
@@ -181,7 +230,10 @@ SUM=$(curl -fsS "$BASE/diary/summary?from=2026-01-01&to=2026-01-31" -H "$AUTH")
 expect "summary counts logged days only" "$(echo "$SUM" | j "['logged_day_count']")" "1"
 expect "summary day total matches"       "$(echo "$SUM" | j "['days'][0]['total']['calories_kcal']")" "438.53"
 
-DID=$(curl -fsS "$BASE/diary?from=2026-01-15" -H "$AUTH" | j "[0]['id']")
+# Picked by what it is, not by position: an open-ended range put whichever
+# entry a later section happened to log at the front of this list.
+DID=$(curl -fsS "$BASE/diary?from=2026-01-15&to=2026-01-15" -H "$AUTH" \
+  | j " and [e['id'] for e in d if e.get('recipe_id')][0]")
 expect "patch recipe servings rescales" \
   "$(curl -fsS -X PATCH "$BASE/diary/$DID" -H "$AUTH" -H 'content-type: application/json' -d '{"recipe_servings":2}' | j "['nutrients']['calories_kcal']")" \
   "667.02"

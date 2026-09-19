@@ -15,6 +15,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Weight tracking** | One weigh-in per day with optional body-fat %, trend chart, 7-entry moving average, kg/lb toggle, target line |
 | **Calorie & macro diary** | Log foods by weight or recipes by serving, grouped into breakfast/lunch/dinner/snack, with progress against your daily targets |
 | **Recipes** | Build from any food in your library; totals and per-serving macros are computed for you and recalculate live as you edit |
+| **Recipes inside recipes** | Add a serving of one recipe as an ingredient of another. Linked, not copied — correct the base sauce once and every dish built on it follows |
 | **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Anyone can correct any entry — see **Foods are a shared record** below |
 | **Food history & verification** | Every edit is kept, attributed and reversible. Entries stay unverified until other people confirm the numbers, and an edit resets that |
 | **Food variants** | Cooked, raw, drained — separate entries pointing at a parent, because they are the same ingredient and different numbers |
@@ -240,9 +241,31 @@ stored — which also means a mistyped serving size is caught by what it works o
 to ("works out to 7000 kcal per 100 g — check the serving size of 2 g") rather
 than sailing through.
 
+**A recipe can be an ingredient of another recipe, by reference.** A sub-recipe
+item stores a link and a number of servings, and the parent's macros come from
+whatever the sub-recipe says today. Copying its ingredients in would freeze
+them, and the first correction to a base sauce would leave every dish built on
+it quietly wrong.
+
+That makes recipes a graph, so two things are enforced on write: no cycles, and
+no more than five levels of nesting. The depth cap is not really about people —
+nobody builds five levels — it bounds the read. Totals are computed by walking
+the graph path by path, and a chain of recipes each containing the next twice
+has 2^depth paths, so an uncapped depth would be a way for one account to make
+everyone else's diary slow.
+
+The sum itself lives in one SQL function, `recipe_totals`. It had been written
+out three times — a lateral in the recipe list, a lateral in the diary, a fold
+in Rust for the detail view — which was survivable while a recipe was a flat
+list of foods. Teaching only some of them about nesting would have made a diary
+entry and the recipe page report different numbers for the same meal, which is
+the kind of bug nobody reports because they assume they misread it.
+
 **Diary entries are a strict XOR.** An entry is either *a food, in grams* or *a
 recipe, in servings*, enforced by a database `CHECK` as well as by the handler,
-so the two quantity columns can never both be set.
+so the two quantity columns can never both be set. Recipe ingredients now use
+the same shape for the same reason — a row carrying both grams and servings is
+not a slightly-wrong ingredient, it is an unanswerable one.
 
 **A recipe's macros are never stored.** They are derived from its ingredients on
 read, which means correcting a food's nutrition retroactively fixes every recipe
@@ -366,7 +389,8 @@ GET    /foods/{id}/verify        POST   /foods/{id}/verify      DELETE /foods/{i
 GET    /keys                     POST   /keys                   DELETE /keys/{id}
 GET    /admin/stats              GET    /admin/users            PATCH  /admin/users/{id}
 
-GET    /recipes                  POST   /recipes
+GET    /recipes                  POST   /recipes    # items are a food in grams
+                                                     # or a recipe in servings
 GET    /recipes/{id}             PUT    /recipes/{id}           DELETE /recipes/{id}
 
 GET    /diary                    POST   /diary

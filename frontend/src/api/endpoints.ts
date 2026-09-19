@@ -34,8 +34,16 @@ import type {
 } from './types'
 
 export interface RecipeItemInput {
-  food_id: string
-  quantity_g: number
+  food_id?: string | null
+  /**
+   * Include another recipe as an ingredient. Linked, not copied: correcting
+   * that recipe later updates everything built on it.
+   */
+  sub_recipe_id?: string | null
+  /** For a food. */
+  quantity_g?: number | null
+  /** For a sub-recipe. */
+  servings?: number | null
   note?: string | null
 }
 

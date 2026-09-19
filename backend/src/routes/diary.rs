@@ -48,18 +48,21 @@ const ENTRY_SELECT: &str = r#"
     FROM diary_entries d
     LEFT JOIN foods f   ON f.id = d.food_id
     LEFT JOIN recipes r ON r.id = d.recipe_id
+    -- The same `recipe_totals` the recipe pages use, divided by the servings
+    -- the recipe makes. This used to be its own copy of the sum, which was
+    -- survivable while a recipe was a flat list of foods; once a recipe can
+    -- contain another recipe, a second copy is a way for the diary and the
+    -- recipe page to quietly report different numbers for the same meal.
     LEFT JOIN LATERAL (
-        SELECT sum(fi.calories_kcal * ri.quantity_g / 100.0) / r.servings AS calories_kcal,
-               sum(fi.protein_g     * ri.quantity_g / 100.0) / r.servings AS protein_g,
-               sum(fi.carbs_g       * ri.quantity_g / 100.0) / r.servings AS carbs_g,
-               sum(fi.fat_g         * ri.quantity_g / 100.0) / r.servings AS fat_g,
-               sum(COALESCE(fi.fiber_g, 0)         * ri.quantity_g / 100.0) / r.servings AS fiber_g,
-               sum(COALESCE(fi.sugar_g, 0)         * ri.quantity_g / 100.0) / r.servings AS sugar_g,
-               sum(COALESCE(fi.saturated_fat_g, 0) * ri.quantity_g / 100.0) / r.servings AS saturated_fat_g,
-               sum(COALESCE(fi.sodium_mg, 0)       * ri.quantity_g / 100.0) / r.servings AS sodium_mg
-        FROM recipe_items ri
-        JOIN foods fi ON fi.id = ri.food_id
-        WHERE ri.recipe_id = d.recipe_id
+        SELECT t.calories_kcal   / r.servings AS calories_kcal,
+               t.protein_g       / r.servings AS protein_g,
+               t.carbs_g         / r.servings AS carbs_g,
+               t.fat_g           / r.servings AS fat_g,
+               t.fiber_g         / r.servings AS fiber_g,
+               t.sugar_g         / r.servings AS sugar_g,
+               t.saturated_fat_g / r.servings AS saturated_fat_g,
+               t.sodium_mg       / r.servings AS sodium_mg
+        FROM recipe_totals(d.recipe_id) t
     ) rt ON d.recipe_id IS NOT NULL
 "#;
 

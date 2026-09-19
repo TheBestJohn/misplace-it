@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Globe, Plus, X } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Globe, Plus, X } from 'lucide-react'
 
 import { api } from '@/api/endpoints'
 import type { RecipeInput } from '@/api/endpoints'
-import type { Food, Nutrients } from '@/api/types'
+import type { Food, Nutrients, RecipeSummary } from '@/api/types'
 import { grams, kcal, round } from '@/lib/format'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -15,17 +15,34 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import FoodPicker from '@/components/FoodPicker'
+import RecipePicker from '@/components/RecipePicker'
 import { Empty, ErrorNote, MacroRow, Spinner } from '@/components/shared'
 
-/** An ingredient being edited, carrying per-100g figures for live totals. */
+/** The four figures the live totals below need. */
+type Macros = Pick<Nutrients, 'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'>
+
+/**
+ * An ingredient being edited.
+ *
+ * Both kinds are held as an amount times a per-unit figure — grams of a food,
+ * or servings of a recipe — so the running totals are one multiplication and
+ * never have to ask which kind a row is.
+ */
 interface DraftItem {
   key: string
-  food_id: string
+  kind: 'food' | 'recipe'
+  /** The food id or the sub-recipe id, depending on `kind`. */
+  refId: string
   name: string
   brand: string | null
-  quantity_g: number
-  per100: Pick<Food, 'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g'>
+  /** Grams for a food, servings for a recipe. */
+  amount: number
+  /** Nutrients in one gram of the food, or one serving of the recipe. */
+  perUnit: Macros
+  /** Grams in one unit: 1 for a food, and a serving's weight for a recipe. */
+  gramsPerUnit: number
 }
 
 const ZERO: Nutrients = {
@@ -72,19 +89,26 @@ export default function RecipeEditorPage() {
     setServings(String(recipe.servings))
     setIsPublic(recipe.is_public)
     setItems(
-      recipe.items.map((item) => ({
-        key: item.id,
-        food_id: item.food_id,
-        name: item.food_name,
-        brand: item.food_brand,
-        quantity_g: item.quantity_g,
-        per100: {
-          calories_kcal: (item.nutrients.calories_kcal / item.quantity_g) * 100,
-          protein_g: (item.nutrients.protein_g / item.quantity_g) * 100,
-          carbs_g: (item.nutrients.carbs_g / item.quantity_g) * 100,
-          fat_g: (item.nutrients.fat_g / item.quantity_g) * 100,
-        },
-      })),
+      recipe.items.map((item) => {
+        // The server sends each item's contribution already scaled, so dividing
+        // by the amount recovers the per-unit figure whichever kind it is.
+        const amount = item.quantity_g ?? item.servings ?? 1
+        return {
+          key: item.id,
+          kind: item.sub_recipe_id ? ('recipe' as const) : ('food' as const),
+          refId: (item.sub_recipe_id ?? item.food_id)!,
+          name: item.name,
+          brand: item.brand,
+          amount,
+          perUnit: {
+            calories_kcal: item.nutrients.calories_kcal / amount,
+            protein_g: item.nutrients.protein_g / amount,
+            carbs_g: item.nutrients.carbs_g / amount,
+            fat_g: item.nutrients.fat_g / amount,
+          },
+          gramsPerUnit: item.weight_g / amount,
+        }
+      }),
     )
   }, [existing.data])
 
@@ -96,7 +120,11 @@ export default function RecipeEditorPage() {
         instructions: instructions || null,
         servings: Number(servings),
         is_public: isPublic,
-        items: items.map((i) => ({ food_id: i.food_id, quantity_g: i.quantity_g })),
+        items: items.map((i) =>
+          i.kind === 'food'
+            ? { food_id: i.refId, quantity_g: i.amount }
+            : { sub_recipe_id: i.refId, servings: i.amount },
+        ),
       }
       return isNew ? api.createRecipe(payload) : api.updateRecipe(id!, payload)
     },
@@ -110,16 +138,16 @@ export default function RecipeEditorPage() {
 
   // Totals recompute as you type, using the same grams/100 scaling the server
   // applies on save — so what is shown is what gets stored.
-  const total: Nutrients = items.reduce<Nutrients>((acc, item) => {
-    const f = item.quantity_g / 100
-    return {
+  const total: Nutrients = items.reduce<Nutrients>(
+    (acc, item) => ({
       ...acc,
-      calories_kcal: acc.calories_kcal + item.per100.calories_kcal * f,
-      protein_g: acc.protein_g + item.per100.protein_g * f,
-      carbs_g: acc.carbs_g + item.per100.carbs_g * f,
-      fat_g: acc.fat_g + item.per100.fat_g * f,
-    }
-  }, ZERO)
+      calories_kcal: acc.calories_kcal + item.perUnit.calories_kcal * item.amount,
+      protein_g: acc.protein_g + item.perUnit.protein_g * item.amount,
+      carbs_g: acc.carbs_g + item.perUnit.carbs_g * item.amount,
+      fat_g: acc.fat_g + item.perUnit.fat_g * item.amount,
+    }),
+    ZERO,
+  )
 
   const perServing: Nutrients = {
     ...total,
@@ -129,23 +157,44 @@ export default function RecipeEditorPage() {
     fat_g: total.fat_g / servingCount,
   }
 
-  const totalWeight = items.reduce((sum, i) => sum + i.quantity_g, 0)
+  const totalWeight = items.reduce((sum, i) => sum + i.gramsPerUnit * i.amount, 0)
 
   const addFood = (food: Food) => {
     setItems((prev) => [
       ...prev,
       {
         key: `${food.id}-${Date.now()}`,
-        food_id: food.id,
+        kind: 'food',
+        refId: food.id,
         name: food.name,
         brand: food.brand,
-        quantity_g: food.serving_size_g,
-        per100: {
-          calories_kcal: food.calories_kcal,
-          protein_g: food.protein_g,
-          carbs_g: food.carbs_g,
-          fat_g: food.fat_g,
+        amount: food.serving_size_g,
+        // Foods are stored per 100 g; the draft works in per-gram so both kinds
+        // of row share one multiplication.
+        perUnit: {
+          calories_kcal: food.calories_kcal / 100,
+          protein_g: food.protein_g / 100,
+          carbs_g: food.carbs_g / 100,
+          fat_g: food.fat_g / 100,
         },
+        gramsPerUnit: 1,
+      },
+    ])
+    setPicking(false)
+  }
+
+  const addRecipe = (recipe: RecipeSummary) => {
+    setItems((prev) => [
+      ...prev,
+      {
+        key: `${recipe.id}-${Date.now()}`,
+        kind: 'recipe',
+        refId: recipe.id,
+        name: recipe.name,
+        brand: null,
+        amount: 1,
+        perUnit: recipe.per_serving,
+        gramsPerUnit: recipe.total_weight_g / recipe.servings,
       },
     ])
     setPicking(false)
@@ -263,32 +312,55 @@ export default function RecipeEditorPage() {
               {items.map((item, index) => (
                 <li key={item.key} className="flex items-center gap-3 py-2.5">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{item.name}</p>
-                    {item.brand && (
-                      <p className="text-muted-foreground truncate text-xs">{item.brand}</p>
+                    {item.kind === 'recipe' ? (
+                      // A sub-recipe is a real thing elsewhere in the app, so
+                      // its name goes where its name belongs: to it. Same tab,
+                      // like the Back button — unsaved edits are lost either
+                      // way, and a link that opens somewhere unexpected is
+                      // worse than one that behaves like every other link.
+                      <Link
+                        to={`/recipes/${item.refId}`}
+                        className="hover:text-primary flex items-center gap-1.5 truncate font-medium underline-offset-4 hover:underline"
+                      >
+                        {item.name}
+                        <ExternalLink className="size-3.5 shrink-0" />
+                      </Link>
+                    ) : (
+                      <p className="truncate font-medium">{item.name}</p>
+                    )}
+                    {item.kind === 'recipe' ? (
+                      <p className="text-muted-foreground truncate text-xs">
+                        recipe · {grams(item.gramsPerUnit * item.amount, 0)}
+                      </p>
+                    ) : (
+                      item.brand && (
+                        <p className="text-muted-foreground truncate text-xs">{item.brand}</p>
+                      )
                     )}
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Input
                       type="number"
-                      min={0.1}
+                      min={item.kind === 'recipe' ? 0.01 : 0.1}
                       step="any"
                       disabled={readOnly}
                       className="tabular w-20 text-right"
-                      aria-label={`${item.name} grams`}
-                      value={item.quantity_g}
+                      aria-label={`${item.name} ${item.kind === 'recipe' ? 'servings' : 'grams'}`}
+                      value={item.amount}
                       onChange={(e) =>
                         setItems((prev) =>
                           prev.map((it, i) =>
-                            i === index ? { ...it, quantity_g: Number(e.target.value) } : it,
+                            i === index ? { ...it, amount: Number(e.target.value) } : it,
                           ),
                         )
                       }
                     />
-                    <span className="text-muted-foreground text-xs">g</span>
+                    <span className="text-muted-foreground w-12 text-xs">
+                      {item.kind === 'recipe' ? 'servings' : 'g'}
+                    </span>
                   </div>
                   <span className="text-muted-foreground tabular w-20 text-right text-xs">
-                    {kcal((item.per100.calories_kcal * item.quantity_g) / 100)}
+                    {kcal(item.perUnit.calories_kcal * item.amount)}
                   </span>
                   {!readOnly && (
                     <Button
@@ -350,7 +422,18 @@ export default function RecipeEditorPage() {
           <DialogHeader>
             <DialogTitle>Add ingredient</DialogTitle>
           </DialogHeader>
-          <FoodPicker onPick={addFood} />
+          <Tabs defaultValue="food">
+            <TabsList>
+              <TabsTrigger value="food">Food</TabsTrigger>
+              <TabsTrigger value="recipe">Recipe</TabsTrigger>
+            </TabsList>
+            <TabsContent value="food" className="pt-3">
+              <FoodPicker onPick={addFood} />
+            </TabsContent>
+            <TabsContent value="recipe" className="pt-3">
+              <RecipePicker excludeId={id} onPick={addRecipe} />
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
     </div>

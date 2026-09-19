@@ -274,10 +274,16 @@ export interface BarcodeLookup {
 
 export interface RecipeItem {
   id: string
-  food_id: string
-  food_name: string
-  food_brand: string | null
-  quantity_g: number
+  /** Set when this ingredient is a food. Exactly one of these two is set. */
+  food_id: string | null
+  /** Set when this ingredient is another recipe, taken in servings. */
+  sub_recipe_id: string | null
+  name: string
+  brand: string | null
+  quantity_g: number | null
+  servings: number | null
+  /** Grams for a food; for a sub-recipe, the weight of the servings taken. */
+  weight_g: number
   note: string | null
   sort_order: number
   nutrients: Nutrients

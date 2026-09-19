@@ -82,8 +82,8 @@ pub async fn list(
         r#"
         SELECT r.id, r.user_id, r.name, r.description, r.servings, r.is_public,
                u.display_name AS author, r.created_at, r.updated_at,
-               COALESCE(t.item_count, 0)      AS item_count,
-               COALESCE(t.total_weight_g, 0)  AS total_weight_g,
+               COALESCE(c.item_count, 0)      AS item_count,
+               COALESCE(t.weight_g, 0)        AS total_weight_g,
                COALESCE(t.calories_kcal, 0)   AS calories_kcal,
                COALESCE(t.protein_g, 0)       AS protein_g,
                COALESCE(t.carbs_g, 0)         AS carbs_g,
@@ -94,21 +94,14 @@ pub async fn list(
                COALESCE(t.sodium_mg, 0)       AS sodium_mg
         FROM recipes r
         JOIN users u ON u.id = r.user_id
+        -- `recipe_totals` resolves any nesting to the foods at the leaves.
+        -- Using it here rather than a sum written out in place is what keeps
+        -- this list, the detail view and the diary from disagreeing about the
+        -- same recipe.
+        LEFT JOIN LATERAL (SELECT * FROM recipe_totals(r.id)) t ON TRUE
         LEFT JOIN LATERAL (
-            SELECT count(*)                                       AS item_count,
-                   sum(ri.quantity_g)                             AS total_weight_g,
-                   sum(f.calories_kcal   * ri.quantity_g / 100.0) AS calories_kcal,
-                   sum(f.protein_g       * ri.quantity_g / 100.0) AS protein_g,
-                   sum(f.carbs_g         * ri.quantity_g / 100.0) AS carbs_g,
-                   sum(f.fat_g           * ri.quantity_g / 100.0) AS fat_g,
-                   sum(COALESCE(f.fiber_g, 0)         * ri.quantity_g / 100.0) AS fiber_g,
-                   sum(COALESCE(f.sugar_g, 0)         * ri.quantity_g / 100.0) AS sugar_g,
-                   sum(COALESCE(f.saturated_fat_g, 0) * ri.quantity_g / 100.0) AS saturated_fat_g,
-                   sum(COALESCE(f.sodium_mg, 0)       * ri.quantity_g / 100.0) AS sodium_mg
-            FROM recipe_items ri
-            JOIN foods f ON f.id = ri.food_id
-            WHERE ri.recipe_id = r.id
-        ) t ON TRUE
+            SELECT count(*) AS item_count FROM recipe_items ri WHERE ri.recipe_id = r.id
+        ) c ON TRUE
         WHERE CASE $3::text
                 WHEN 'public' THEN r.is_public
                 WHEN 'all'    THEN (r.user_id = $1 OR r.is_public)
@@ -203,7 +196,7 @@ pub async fn create(
     .fetch_one(&mut *tx)
     .await?;
 
-    insert_items(&mut tx, recipe.id, &body).await?;
+    insert_items(&mut tx, recipe.id, user.id, &body).await?;
     tx.commit().await?;
 
     let full = load_recipe(&state, user.id, recipe.id).await?;
@@ -254,7 +247,7 @@ pub async fn update(
         .execute(&mut *tx)
         .await?;
 
-    insert_items(&mut tx, id, &body).await?;
+    insert_items(&mut tx, id, user.id, &body).await?;
     tx.commit().await?;
 
     Ok(Json(load_recipe(&state, user.id, id).await?))
@@ -266,7 +259,7 @@ pub async fn update(
     params(("id" = Uuid, Path, description = "Recipe id")),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 400, description = "Still referenced by a diary entry", body = crate::error::ErrorBody),
+        (status = 400, description = "Still used by a diary entry or another recipe", body = crate::error::ErrorBody),
         (status = 404, body = crate::error::ErrorBody),
     )
 )]
@@ -275,6 +268,22 @@ pub async fn delete(
     user: CurrentUser,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
+    // Asked before attempting the delete, because the foreign key cannot say
+    // *which* reference blocked it and "logged in your diary" is a confusing
+    // answer when the real reason is another recipe — possibly someone else's.
+    let used_by: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT recipe_id) FROM recipe_items WHERE sub_recipe_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await?;
+    if used_by > 0 {
+        return Err(ApiError::bad_request(format!(
+            "this recipe is an ingredient of {used_by} other recipe{} and cannot be deleted",
+            if used_by == 1 { "" } else { "s" }
+        )));
+    }
+
     let result = sqlx::query("DELETE FROM recipes WHERE id = $1 AND user_id = $2")
         .bind(id)
         .bind(user.id)
@@ -296,10 +305,17 @@ pub async fn delete(
 async fn insert_items(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     recipe_id: Uuid,
+    user_id: Uuid,
     body: &UpsertRecipeRequest,
 ) -> ApiResult<()> {
-    let food_ids: Vec<Uuid> = body.items.iter().map(|i| i.food_id).collect();
-    let quantities: Vec<f64> = body.items.iter().map(|i| i.quantity_g).collect();
+    for item in &body.items {
+        item.check_target().map_err(ApiError::bad_request)?;
+    }
+
+    let food_ids: Vec<Option<Uuid>> = body.items.iter().map(|i| i.food_id).collect();
+    let sub_ids: Vec<Option<Uuid>> = body.items.iter().map(|i| i.sub_recipe_id).collect();
+    let quantities: Vec<Option<f64>> = body.items.iter().map(|i| i.quantity_g).collect();
+    let servings: Vec<Option<f64>> = body.items.iter().map(|i| i.servings).collect();
     let notes: Vec<Option<String>> = body.items.iter().map(|i| i.note.clone()).collect();
     let orders: Vec<i32> = (0..body.items.len() as i32).collect();
 
@@ -307,30 +323,67 @@ async fn insert_items(
     // explicitly (instead of relying on the foreign key) is what lets an unknown
     // id come back as a clear 400 naming the id rather than an opaque
     // constraint error. Foods are global, so there is no visibility test.
+    let wanted_foods: Vec<Uuid> = food_ids.iter().flatten().copied().collect();
     let known: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM foods WHERE id = ANY($1)")
-        .bind(&food_ids)
+        .bind(&wanted_foods)
         .fetch_all(&mut **tx)
         .await?;
-
-    if let Some(missing) = food_ids.iter().find(|id| !known.contains(id)) {
+    if let Some(missing) = wanted_foods.iter().find(|id| !known.contains(id)) {
         return Err(ApiError::bad_request(format!("unknown food id {missing}")));
+    }
+
+    // Sub-recipes do need a visibility test: recipes are private unless shared,
+    // so the set you may build on is your own plus everyone's public ones. A
+    // recipe you cannot read is reported as unknown rather than forbidden,
+    // which is also what a plain GET would tell you about it.
+    let wanted_subs: Vec<Uuid> = sub_ids.iter().flatten().copied().collect();
+    let visible: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM recipes WHERE id = ANY($1) AND (user_id = $2 OR is_public)",
+    )
+    .bind(&wanted_subs)
+    .bind(user_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if let Some(missing) = wanted_subs.iter().find(|id| !visible.contains(id)) {
+        return Err(ApiError::bad_request(format!(
+            "unknown recipe id {missing}"
+        )));
     }
 
     // One INSERT for the whole ingredient list: UNNEST turns the parallel
     // arrays into rows, so a 20-ingredient recipe is a single round trip.
     sqlx::query(
-        "INSERT INTO recipe_items (recipe_id, food_id, quantity_g, note, sort_order)
-         SELECT $1, * FROM UNNEST($2::uuid[], $3::float8[], $4::text[], $5::int[])",
+        "INSERT INTO recipe_items (recipe_id, food_id, sub_recipe_id, quantity_g, servings, note, sort_order)
+         SELECT $1, * FROM UNNEST($2::uuid[], $3::uuid[], $4::float8[], $5::float8[], $6::text[], $7::int[])",
     )
     .bind(recipe_id)
     .bind(&food_ids)
+    .bind(&sub_ids)
     .bind(&quantities)
+    .bind(&servings)
     .bind(&notes)
     .bind(&orders)
     .execute(&mut **tx)
-    .await?;
+    .await
+    .map_err(graph_error)?;
 
     Ok(())
+}
+
+/// Surface the cycle and depth guards with the wording the trigger raised.
+///
+/// Both come back as `check_violation`, which the generic mapper renders as
+/// "that conflicts with an existing record" — true, and no help at all to
+/// someone who has just tried to put a recipe inside itself.
+fn graph_error(e: sqlx::Error) -> ApiError {
+    match &e {
+        sqlx::Error::Database(db)
+            if db.message().contains("contain itself") || db.message().contains("nested") =>
+        {
+            ApiError::bad_request(db.message().to_string())
+        }
+        _ => e.into(),
+    }
 }
 
 pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult<Recipe> {
@@ -367,14 +420,37 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
 
     let author = recipe.author.clone();
 
+    // Each row arrives already scaled: a food by its grams, a sub-recipe by the
+    // servings taken of it. `recipe_totals` does the nested part, so this query
+    // stays a flat join no matter how deep the recipe goes.
     let item_rows: Vec<RecipeItemRow> = sqlx::query_as(
         r#"
-        SELECT ri.id, ri.recipe_id, ri.food_id, ri.quantity_g, ri.note, ri.sort_order,
-               f.name AS food_name, f.brand AS food_brand,
-               f.calories_kcal, f.protein_g, f.carbs_g, f.fat_g,
-               f.fiber_g, f.sugar_g, f.saturated_fat_g, f.sodium_mg
+        SELECT ri.id, ri.food_id, ri.sub_recipe_id, ri.quantity_g, ri.servings,
+               ri.note, ri.sort_order,
+               COALESCE(f.name, sub.name) AS name,
+               f.brand AS brand,
+               COALESCE(f.calories_kcal * ri.quantity_g / 100.0,
+                        rt.calories_kcal * ri.servings / sub.servings, 0) AS calories_kcal,
+               COALESCE(f.protein_g * ri.quantity_g / 100.0,
+                        rt.protein_g * ri.servings / sub.servings, 0) AS protein_g,
+               COALESCE(f.carbs_g * ri.quantity_g / 100.0,
+                        rt.carbs_g * ri.servings / sub.servings, 0) AS carbs_g,
+               COALESCE(f.fat_g * ri.quantity_g / 100.0,
+                        rt.fat_g * ri.servings / sub.servings, 0) AS fat_g,
+               COALESCE(f.fiber_g * ri.quantity_g / 100.0,
+                        rt.fiber_g * ri.servings / sub.servings, 0) AS fiber_g,
+               COALESCE(f.sugar_g * ri.quantity_g / 100.0,
+                        rt.sugar_g * ri.servings / sub.servings, 0) AS sugar_g,
+               COALESCE(f.saturated_fat_g * ri.quantity_g / 100.0,
+                        rt.saturated_fat_g * ri.servings / sub.servings, 0) AS saturated_fat_g,
+               COALESCE(f.sodium_mg * ri.quantity_g / 100.0,
+                        rt.sodium_mg * ri.servings / sub.servings, 0) AS sodium_mg,
+               COALESCE(ri.quantity_g, rt.weight_g * ri.servings / sub.servings, 0) AS weight_g
         FROM recipe_items ri
-        JOIN foods f ON f.id = ri.food_id
+        LEFT JOIN foods f   ON f.id = ri.food_id
+        LEFT JOIN recipes sub ON sub.id = ri.sub_recipe_id
+        LEFT JOIN LATERAL (SELECT * FROM recipe_totals(ri.sub_recipe_id)) rt
+               ON ri.sub_recipe_id IS NOT NULL
         WHERE ri.recipe_id = $1
         ORDER BY ri.sort_order ASC
         "#,
@@ -383,8 +459,14 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
     .fetch_all(&state.db)
     .await?;
 
-    let total: Nutrients = item_rows.iter().map(|r| r.nutrients()).sum();
-    let total_weight_g = item_rows.iter().map(|r| r.quantity_g).sum::<f64>();
+    // Asked of the same function the list and the diary use, rather than summed
+    // from the rows above. The two agree to the last float, and when they ever
+    // stop agreeing it will be because the function changed — one place to look.
+    let totals: TotalsRow = sqlx::query_as("SELECT * FROM recipe_totals($1)")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    let total = totals.nutrients();
 
     let items = item_rows
         .into_iter()
@@ -392,9 +474,12 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
             nutrients: r.nutrients().rounded(),
             id: r.id,
             food_id: r.food_id,
-            food_name: r.food_name,
-            food_brand: r.food_brand,
+            sub_recipe_id: r.sub_recipe_id,
+            name: r.name,
+            brand: r.brand,
             quantity_g: r.quantity_g,
+            servings: r.servings,
+            weight_g: round2(r.weight_g),
             note: r.note,
             sort_order: r.sort_order,
         })
@@ -411,13 +496,43 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
         description: recipe.description,
         instructions: recipe.instructions,
         servings: recipe.servings,
-        total_weight_g: round2(total_weight_g),
+        total_weight_g: round2(totals.weight_g),
         items,
         total: total.rounded(),
         per_serving: total.scaled(1.0 / recipe.servings).rounded(),
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     })
+}
+
+/// The row `recipe_totals` returns, so the three callers that need the whole
+/// recipe in one go share a type as well as a query.
+#[derive(Debug, sqlx::FromRow)]
+struct TotalsRow {
+    calories_kcal: f64,
+    protein_g: f64,
+    carbs_g: f64,
+    fat_g: f64,
+    fiber_g: f64,
+    sugar_g: f64,
+    saturated_fat_g: f64,
+    sodium_mg: f64,
+    weight_g: f64,
+}
+
+impl TotalsRow {
+    fn nutrients(&self) -> Nutrients {
+        Nutrients {
+            calories_kcal: self.calories_kcal,
+            protein_g: self.protein_g,
+            carbs_g: self.carbs_g,
+            fat_g: self.fat_g,
+            fiber_g: self.fiber_g,
+            sugar_g: self.sugar_g,
+            saturated_fat_g: self.saturated_fat_g,
+            sodium_mg: self.sodium_mg,
+        }
+    }
 }
 
 fn round2(v: f64) -> f64 {
