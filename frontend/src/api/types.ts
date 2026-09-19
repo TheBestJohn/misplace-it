@@ -278,6 +278,8 @@ export interface RecipeItem {
   food_id: string | null
   /** Set when this ingredient is another recipe, taken in servings. */
   sub_recipe_id: string | null
+  /** Set when this ingredient is just words, with no nutrition attached. */
+  label: string | null
   name: string
   brand: string | null
   quantity_g: number | null
@@ -302,6 +304,8 @@ export interface RecipeSummary {
   author: string | null
   total_weight_g: number
   item_count: number
+  /** Ingredients, counted through nesting, that carry no nutrition. */
+  untracked_count: number
   per_serving: Nutrients
   created_at: string
   updated_at: string
@@ -317,6 +321,8 @@ export interface Recipe {
   is_owner: boolean
   author: string | null
   total_weight_g: number
+  /** Ingredients, counted through nesting, that carry no nutrition. */
+  untracked_count: number
   items: RecipeItem[]
   total: Nutrients
   per_serving: Nutrients

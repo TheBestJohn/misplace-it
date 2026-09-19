@@ -76,6 +76,7 @@ pub async fn list(
         sugar_g: f64,
         saturated_fat_g: f64,
         sodium_mg: f64,
+        untracked_count: i64,
     }
 
     let rows: Vec<Row> = sqlx::query_as(
@@ -91,7 +92,8 @@ pub async fn list(
                COALESCE(t.fiber_g, 0)         AS fiber_g,
                COALESCE(t.sugar_g, 0)         AS sugar_g,
                COALESCE(t.saturated_fat_g, 0) AS saturated_fat_g,
-               COALESCE(t.sodium_mg, 0)       AS sodium_mg
+               COALESCE(t.sodium_mg, 0)       AS sodium_mg,
+               COALESCE(t.untracked_count, 0) AS untracked_count
         FROM recipes r
         JOIN users u ON u.id = r.user_id
         -- `recipe_totals` resolves any nesting to the foods at the leaves.
@@ -141,6 +143,7 @@ pub async fn list(
                 servings: r.servings,
                 total_weight_g: round2(r.total_weight_g),
                 item_count: r.item_count,
+                untracked_count: r.untracked_count,
                 per_serving: total.scaled(1.0 / r.servings).rounded(),
                 created_at: r.created_at,
                 updated_at: r.updated_at,
@@ -314,6 +317,17 @@ async fn insert_items(
 
     let food_ids: Vec<Option<Uuid>> = body.items.iter().map(|i| i.food_id).collect();
     let sub_ids: Vec<Option<Uuid>> = body.items.iter().map(|i| i.sub_recipe_id).collect();
+    let labels: Vec<Option<String>> = body
+        .items
+        .iter()
+        .map(|i| {
+            i.label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+        })
+        .collect();
     let quantities: Vec<Option<f64>> = body.items.iter().map(|i| i.quantity_g).collect();
     let servings: Vec<Option<f64>> = body.items.iter().map(|i| i.servings).collect();
     let notes: Vec<Option<String>> = body.items.iter().map(|i| i.note.clone()).collect();
@@ -353,12 +367,15 @@ async fn insert_items(
     // One INSERT for the whole ingredient list: UNNEST turns the parallel
     // arrays into rows, so a 20-ingredient recipe is a single round trip.
     sqlx::query(
-        "INSERT INTO recipe_items (recipe_id, food_id, sub_recipe_id, quantity_g, servings, note, sort_order)
-         SELECT $1, * FROM UNNEST($2::uuid[], $3::uuid[], $4::float8[], $5::float8[], $6::text[], $7::int[])",
+        "INSERT INTO recipe_items
+             (recipe_id, food_id, sub_recipe_id, label, quantity_g, servings, note, sort_order)
+         SELECT $1, * FROM UNNEST($2::uuid[], $3::uuid[], $4::text[], $5::float8[], $6::float8[],
+                                  $7::text[], $8::int[])",
     )
     .bind(recipe_id)
     .bind(&food_ids)
     .bind(&sub_ids)
+    .bind(&labels)
     .bind(&quantities)
     .bind(&servings)
     .bind(&notes)
@@ -425,9 +442,9 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
     // stays a flat join no matter how deep the recipe goes.
     let item_rows: Vec<RecipeItemRow> = sqlx::query_as(
         r#"
-        SELECT ri.id, ri.food_id, ri.sub_recipe_id, ri.quantity_g, ri.servings,
+        SELECT ri.id, ri.food_id, ri.sub_recipe_id, ri.label, ri.quantity_g, ri.servings,
                ri.note, ri.sort_order,
-               COALESCE(f.name, sub.name) AS name,
+               COALESCE(f.name, sub.name, ri.label) AS name,
                f.brand AS brand,
                COALESCE(f.calories_kcal * ri.quantity_g / 100.0,
                         rt.calories_kcal * ri.servings / sub.servings, 0) AS calories_kcal,
@@ -475,6 +492,7 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
             id: r.id,
             food_id: r.food_id,
             sub_recipe_id: r.sub_recipe_id,
+            label: r.label,
             name: r.name,
             brand: r.brand,
             quantity_g: r.quantity_g,
@@ -497,6 +515,7 @@ pub async fn load_recipe(state: &AppState, user_id: Uuid, id: Uuid) -> ApiResult
         instructions: recipe.instructions,
         servings: recipe.servings,
         total_weight_g: round2(totals.weight_g),
+        untracked_count: totals.untracked_count,
         items,
         total: total.rounded(),
         per_serving: total.scaled(1.0 / recipe.servings).rounded(),
@@ -518,6 +537,7 @@ struct TotalsRow {
     saturated_fat_g: f64,
     sodium_mg: f64,
     weight_g: f64,
+    untracked_count: i64,
 }
 
 impl TotalsRow {

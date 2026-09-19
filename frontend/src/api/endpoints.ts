@@ -40,6 +40,11 @@ export interface RecipeItemInput {
    * that recipe later updates everything built on it.
    */
   sub_recipe_id?: string | null
+  /**
+   * A one-off ingredient that is just words — "salt and pepper to taste". No
+   * nutrition and no database entry; the recipe reports how many it has.
+   */
+  label?: string | null
   /** For a food. */
   quantity_g?: number | null
   /** For a sub-recipe. */

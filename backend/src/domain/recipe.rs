@@ -24,11 +24,12 @@ pub struct RecipeItemRow {
     pub id: Uuid,
     pub food_id: Option<Uuid>,
     pub sub_recipe_id: Option<Uuid>,
+    pub label: Option<String>,
     pub quantity_g: Option<f64>,
     pub servings: Option<f64>,
     pub note: Option<String>,
     pub sort_order: i32,
-    /// The food's name, or the sub-recipe's.
+    /// The food's name, the sub-recipe's, or the free-text label.
     pub name: String,
     /// Only a food has one.
     pub brand: Option<String>,
@@ -66,6 +67,10 @@ pub struct RecipeItem {
     pub food_id: Option<Uuid>,
     /// Set when this ingredient is another recipe, taken in servings.
     pub sub_recipe_id: Option<Uuid>,
+    /// Set when this ingredient is just words — no nutrition, no database
+    /// entry. Its `nutrients` are all zero, by definition rather than by
+    /// accident.
+    pub label: Option<String>,
     pub name: String,
     pub brand: Option<String>,
     pub quantity_g: Option<f64>,
@@ -94,6 +99,9 @@ pub struct RecipeSummary {
     pub author: Option<String>,
     pub total_weight_g: f64,
     pub item_count: i64,
+    /// How many ingredients, counted through any nesting, carry no nutrition.
+    /// The macros here are complete only when this is zero.
+    pub untracked_count: i64,
     pub per_serving: Nutrients,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -110,6 +118,8 @@ pub struct Recipe {
     pub is_owner: bool,
     pub author: Option<String>,
     pub total_weight_g: f64,
+    /// How many ingredients, counted through any nesting, carry no nutrition.
+    pub untracked_count: i64,
     pub items: Vec<RecipeItem>,
     pub total: Nutrients,
     pub per_serving: Nutrients,
@@ -125,6 +135,10 @@ pub struct Recipe {
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema)]
 pub struct RecipeItemInput {
     pub food_id: Option<Uuid>,
+    /// A one-off ingredient that is just words: "salt and pepper to taste".
+    /// Contributes nothing to the macros, and says so on the recipe.
+    #[validate(length(min = 1, max = 200, message = "must be 1-200 characters"))]
+    pub label: Option<String>,
     /// Include another recipe as an ingredient. It is linked, not copied: its
     /// ingredients stay its own, and correcting it later updates every recipe
     /// built on it.
@@ -149,23 +163,49 @@ impl RecipeItemInput {
     /// Check the XOR here as well as in the database, so a malformed item comes
     /// back naming what is wrong rather than as a constraint name.
     pub fn check_target(&self) -> Result<(), &'static str> {
-        match (self.food_id, self.sub_recipe_id) {
-            (Some(_), Some(_)) => Err("an ingredient is either a food or a recipe, not both"),
-            (None, None) => Err("an ingredient needs a food_id or a sub_recipe_id"),
-            (Some(_), None) if self.quantity_g.is_none() => {
-                Err("quantity_g is required for a food ingredient")
-            }
-            (None, Some(_)) if self.servings.is_none() => {
-                Err("servings is required for a recipe ingredient")
-            }
-            (Some(_), None) if self.servings.is_some() => {
-                Err("a food ingredient is measured in grams, not servings")
-            }
-            (None, Some(_)) if self.quantity_g.is_some() => {
-                Err("a recipe ingredient is measured in servings, not grams")
-            }
-            _ => Ok(()),
+        let label = self
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty());
+        let targets = [
+            self.food_id.is_some(),
+            self.sub_recipe_id.is_some(),
+            label.is_some(),
+        ];
+
+        match targets.iter().filter(|set| **set).count() {
+            0 => return Err("an ingredient needs a food_id, a sub_recipe_id or a label"),
+            1 => {}
+            _ => return Err("an ingredient is a food, a recipe or a label — only one"),
         }
+
+        if label.is_some() {
+            // A free-text ingredient contributes nothing, so a quantity beside
+            // it would be a number the totals deliberately ignore.
+            if self.quantity_g.is_some() || self.servings.is_some() {
+                return Err("a free-text ingredient carries no quantity");
+            }
+            return Ok(());
+        }
+
+        if self.food_id.is_some() {
+            if self.quantity_g.is_none() {
+                return Err("quantity_g is required for a food ingredient");
+            }
+            if self.servings.is_some() {
+                return Err("a food ingredient is measured in grams, not servings");
+            }
+        } else {
+            if self.servings.is_none() {
+                return Err("servings is required for a recipe ingredient");
+            }
+            if self.quantity_g.is_some() {
+                return Err("a recipe ingredient is measured in servings, not grams");
+            }
+        }
+
+        Ok(())
     }
 }
 

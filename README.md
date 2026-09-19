@@ -16,6 +16,7 @@ Rust (Axum) API + Postgres + React SPA, all behind one `docker compose up`.
 | **Calorie & macro diary** | Log foods by weight or recipes by serving, grouped into breakfast/lunch/dinner/snack, with progress against your daily targets |
 | **Recipes** | Build from any food in your library; totals and per-serving macros are computed for you and recalculate live as you edit |
 | **Recipes inside recipes** | Add a serving of one recipe as an ingredient of another. Linked, not copied — correct the base sauce once and every dish built on it follows |
+| **Ingredients that are just words** | "Salt and pepper to taste" needs no database entry. It contributes nothing to the macros, and the recipe says how many such ingredients it has so the totals are never quietly short |
 | **Food database** | Global and shared: custom foods plus anything imported from USDA or Open Food Facts. Anyone can correct any entry — see **Foods are a shared record** below |
 | **Food history & verification** | Every edit is kept, attributed and reversible. Entries stay unverified until other people confirm the numbers, and an edit resets that |
 | **Food variants** | Cooked, raw, drained — separate entries pointing at a parent, because they are the same ingredient and different numbers |
@@ -261,11 +262,23 @@ list of foods. Teaching only some of them about nesting would have made a diary
 entry and the recipe page report different numbers for the same meal, which is
 the kind of bug nobody reports because they assume they misread it.
 
+**An ingredient with no nutrition still has to be visible.** Some ingredients
+are only words — a pinch of salt, a squeeze of lemon. Inventing a food row for
+them would put fake entries in a shared, community-edited database to record
+something that rounds to nothing, so they are stored as a label and contribute
+nothing. The risk is the obvious one: a recipe whose macros silently exclude
+three ingredients is worse than one with no macros at all. So the count travels
+with the numbers, out of the same walk that produced them, and counts the ones
+inside sub-recipes too — those are the ones you cannot see from the page you are
+reading.
+
 **Diary entries are a strict XOR.** An entry is either *a food, in grams* or *a
 recipe, in servings*, enforced by a database `CHECK` as well as by the handler,
 so the two quantity columns can never both be set. Recipe ingredients now use
 the same shape for the same reason — a row carrying both grams and servings is
-not a slightly-wrong ingredient, it is an unanswerable one.
+not a slightly-wrong ingredient, it is an unanswerable one. A third arm covers
+free-text ingredients, which carry no quantity at all: a gram figure next to
+something the totals deliberately ignore would be worse than no figure.
 
 **A recipe's macros are never stored.** They are derived from its ingredients on
 read, which means correcting a food's nutrition retroactively fixes every recipe

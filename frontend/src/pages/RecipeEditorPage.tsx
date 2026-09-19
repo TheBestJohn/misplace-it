@@ -32,8 +32,9 @@ type Macros = Pick<Nutrients, 'calories_kcal' | 'protein_g' | 'carbs_g' | 'fat_g
  */
 interface DraftItem {
   key: string
-  kind: 'food' | 'recipe'
-  /** The food id or the sub-recipe id, depending on `kind`. */
+  kind: 'food' | 'recipe' | 'text'
+  /** The food id or the sub-recipe id. Empty for a free-text ingredient,
+   *  which points at nothing — that is what makes it free text. */
   refId: string
   name: string
   brand: string | null
@@ -54,6 +55,46 @@ const ZERO: Nutrients = {
   sugar_g: 0,
   saturated_fat_g: 0,
   sodium_mg: 0,
+}
+
+/**
+ * Add an ingredient that is only words.
+ *
+ * Its own component so the input has its own state: typing here must not
+ * re-render the ingredient list on every keystroke, and a component declared
+ * inside the page body would be a new type on every render and lose focus.
+ */
+function TextIngredientForm({ onAdd }: { onAdd: (label: string) => void }) {
+  const [text, setText] = useState('')
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (text.trim()) onAdd(text.trim())
+        setText('')
+      }}
+    >
+      <div className="space-y-1.5">
+        <Label htmlFor="r-freetext">Ingredient</Label>
+        <Input
+          id="r-freetext"
+          autoFocus
+          placeholder="e.g. salt and pepper to taste"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </div>
+      <Button type="submit" disabled={!text.trim()}>
+        <Plus /> Add
+      </Button>
+      <p className="text-muted-foreground text-xs">
+        For the things not worth a database entry — a pinch of salt, a squeeze of lemon. It
+        contributes nothing to the macros, and the recipe says how many of these it has so the
+        totals are never quietly short.
+      </p>
+    </form>
+  )
 }
 
 export default function RecipeEditorPage() {
@@ -95,8 +136,12 @@ export default function RecipeEditorPage() {
         const amount = item.quantity_g ?? item.servings ?? 1
         return {
           key: item.id,
-          kind: item.sub_recipe_id ? ('recipe' as const) : ('food' as const),
-          refId: (item.sub_recipe_id ?? item.food_id)!,
+          kind: item.label
+            ? ('text' as const)
+            : item.sub_recipe_id
+              ? ('recipe' as const)
+              : ('food' as const),
+          refId: item.sub_recipe_id ?? item.food_id ?? '',
           name: item.name,
           brand: item.brand,
           amount,
@@ -120,11 +165,11 @@ export default function RecipeEditorPage() {
         instructions: instructions || null,
         servings: Number(servings),
         is_public: isPublic,
-        items: items.map((i) =>
-          i.kind === 'food'
-            ? { food_id: i.refId, quantity_g: i.amount }
-            : { sub_recipe_id: i.refId, servings: i.amount },
-        ),
+        items: items.map((i) => {
+          if (i.kind === 'food') return { food_id: i.refId, quantity_g: i.amount }
+          if (i.kind === 'recipe') return { sub_recipe_id: i.refId, servings: i.amount }
+          return { label: i.name }
+        }),
       }
       return isNew ? api.createRecipe(payload) : api.updateRecipe(id!, payload)
     },
@@ -159,6 +204,12 @@ export default function RecipeEditorPage() {
 
   const totalWeight = items.reduce((sum, i) => sum + i.gramsPerUnit * i.amount, 0)
 
+  // What this page can see for itself, and what the server counted through any
+  // nesting. The saved figure is the honest one; the local count is what keeps
+  // the warning truthful while you are still editing.
+  const untrackedHere = items.filter((i) => i.kind === 'text').length
+  const untracked = Math.max(untrackedHere, existing.data?.untracked_count ?? 0)
+
   const addFood = (food: Food) => {
     setItems((prev) => [
       ...prev,
@@ -178,6 +229,25 @@ export default function RecipeEditorPage() {
           fat_g: food.fat_g / 100,
         },
         gramsPerUnit: 1,
+      },
+    ])
+    setPicking(false)
+  }
+
+  const addText = (label: string) => {
+    setItems((prev) => [
+      ...prev,
+      {
+        key: `text-${Date.now()}`,
+        kind: 'text',
+        refId: '',
+        name: label,
+        brand: null,
+        // Nothing to scale and nothing to contribute. Carried as zeroes rather
+        // than as a special case so the totals below stay one multiplication.
+        amount: 0,
+        perUnit: { calories_kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0 },
+        gramsPerUnit: 0,
       },
     ])
     setPicking(false)
@@ -312,7 +382,23 @@ export default function RecipeEditorPage() {
               {items.map((item, index) => (
                 <li key={item.key} className="flex items-center gap-3 py-2.5">
                   <div className="min-w-0 flex-1">
-                    {item.kind === 'recipe' ? (
+                    {item.kind === 'text' ? (
+                      // Free text stays editable in place: there is no record
+                      // behind it to open, and re-picking it to fix a typo
+                      // would be silly.
+                      <Input
+                        disabled={readOnly}
+                        aria-label={`Ingredient ${index + 1}`}
+                        value={item.name}
+                        onChange={(e) =>
+                          setItems((prev) =>
+                            prev.map((it, i) =>
+                              i === index ? { ...it, name: e.target.value } : it,
+                            ),
+                          )
+                        }
+                      />
+                    ) : item.kind === 'recipe' ? (
                       // A sub-recipe is a real thing elsewhere in the app, so
                       // its name goes where its name belongs: to it. Same tab,
                       // like the Back button — unsaved edits are lost either
@@ -332,12 +418,24 @@ export default function RecipeEditorPage() {
                       <p className="text-muted-foreground truncate text-xs">
                         recipe · {grams(item.gramsPerUnit * item.amount, 0)}
                       </p>
+                    ) : item.kind === 'text' ? (
+                      <p className="text-muted-foreground truncate text-xs">
+                        no nutrition information
+                      </p>
                     ) : (
                       item.brand && (
                         <p className="text-muted-foreground truncate text-xs">{item.brand}</p>
                       )
                     )}
                   </div>
+                  {item.kind === 'text' ? (
+                    // No amount and no calories: both would be numbers the
+                    // totals deliberately ignore.
+                    <span className="text-muted-foreground w-[10.5rem] text-right text-xs">
+                      not counted
+                    </span>
+                  ) : (
+                  <>
                   <div className="flex items-center gap-1.5">
                     <Input
                       type="number"
@@ -362,6 +460,8 @@ export default function RecipeEditorPage() {
                   <span className="text-muted-foreground tabular w-20 text-right text-xs">
                     {kcal(item.perUnit.calories_kcal * item.amount)}
                   </span>
+                  </>
+                  )}
                   {!readOnly && (
                     <Button
                       variant="ghost"
@@ -384,19 +484,36 @@ export default function RecipeEditorPage() {
           <CardTitle>Nutrition</CardTitle>
           <CardDescription>Recomputed as you edit, the same way the server does.</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1">
-            <p className="text-muted-foreground text-xs">
-              Whole recipe · {grams(totalWeight, 0)}
-            </p>
-            <MacroRow n={total} />
+        <CardContent className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1">
+              <p className="text-muted-foreground text-xs">
+                Whole recipe · {grams(totalWeight, 0)}
+              </p>
+              <MacroRow n={total} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-muted-foreground text-xs">
+                Per serving ({round(servingCount, 2)} servings)
+              </p>
+              <MacroRow n={perServing} />
+            </div>
           </div>
-          <div className="space-y-1">
+
+          {/* Said plainly rather than left to be inferred from the ingredient
+              list. A total that silently omits three ingredients is worse than
+              no total, and the count includes ones inside sub-recipes, which
+              you cannot see from this page at all. */}
+          {untracked > 0 && (
             <p className="text-muted-foreground text-xs">
-              Per serving ({round(servingCount, 2)} servings)
+              Excludes {untracked} ingredient{untracked === 1 ? '' : 's'} with no nutrition
+              information
+              {existing.data && existing.data.untracked_count > untrackedHere
+                ? ', some inside a sub-recipe'
+                : ''}
+              .
             </p>
-            <MacroRow n={perServing} />
-          </div>
+          )}
         </CardContent>
       </Card>
 
@@ -405,7 +522,12 @@ export default function RecipeEditorPage() {
           <ErrorNote error={save.error} />
           <div className="flex flex-wrap items-center gap-3">
             <Button
-              disabled={save.isPending || !name || items.length === 0}
+              disabled={
+                save.isPending ||
+                !name ||
+                items.length === 0 ||
+                items.some((i) => i.kind === 'text' && !i.name.trim())
+              }
               onClick={() => save.mutate()}
             >
               {save.isPending ? 'Saving…' : isNew ? 'Create recipe' : 'Save changes'}
@@ -426,12 +548,16 @@ export default function RecipeEditorPage() {
             <TabsList>
               <TabsTrigger value="food">Food</TabsTrigger>
               <TabsTrigger value="recipe">Recipe</TabsTrigger>
+              <TabsTrigger value="text">Just text</TabsTrigger>
             </TabsList>
             <TabsContent value="food" className="pt-3">
               <FoodPicker onPick={addFood} />
             </TabsContent>
             <TabsContent value="recipe" className="pt-3">
               <RecipePicker excludeId={id} onPick={addRecipe} />
+            </TabsContent>
+            <TabsContent value="text" className="pt-3">
+              <TextIngredientForm onAdd={addText} />
             </TabsContent>
           </Tabs>
         </DialogContent>

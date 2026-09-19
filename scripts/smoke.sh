@@ -186,6 +186,39 @@ status "an unknown sub-recipe is refused" 400 -X POST "$BASE/recipes" -H "$AUTH"
   -d '{"name":"Ghost","servings":1,"items":[{"sub_recipe_id":"00000000-0000-0000-0000-000000000000","servings":1}]}'
 status "a recipe in use cannot be deleted" 400 -X DELETE "$BASE/recipes/$SAUCE" -H "$AUTH"
 
+# Some ingredients are just words. They carry no nutrition, which is the point --
+# but a recipe whose macros silently exclude them would be quietly wrong, so the
+# count of them travels with the numbers.
+LOOSE=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Loose ends\",\"servings\":1,
+  \"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":100},
+            {\"label\":\"salt and pepper to taste\"},
+            {\"label\":\"a squeeze of lemon\"}]}")
+LOOSE_ID=$(echo "$LOOSE" | j "['id']")
+expect "a free-text ingredient is kept"      "$(echo "$LOOSE" | j " and [i['label'] for i in d['items'] if i['label']][0]")" "salt and pepper to taste"
+expect "and contributes nothing"             "$(echo "$LOOSE" | j "['total']['calories_kcal']")" "379.0"
+expect "and weighs nothing"                  "$(echo "$LOOSE" | j " and [i['weight_g'] for i in d['items'] if i['label']][0]")" "0.0"
+expect "but the recipe says how many"        "$(echo "$LOOSE" | j "['untracked_count']")" "2"
+expect "the list view says so too"           "$(curl -fsS "$BASE/recipes?q=Loose%20ends" -H "$AUTH" | j "[0]['untracked_count']")" "2"
+
+# A sub-recipe's loose ends leave the parent just as incomplete.
+WRAP=$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' -d "{
+  \"name\":\"Wrapper\",\"servings\":1,
+  \"items\":[{\"sub_recipe_id\":\"$LOOSE_ID\",\"servings\":1},{\"label\":\"olive oil\"}]}")
+expect "untracked is counted through nesting" "$(echo "$WRAP" | j "['untracked_count']")" "3"
+
+expect "a recipe can be nothing but words" \
+  "$(curl -fsS -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+      -d '{"name":"Improvised","servings":1,"items":[{"label":"whatever is in the fridge"}]}' | j "['total']['calories_kcal']")" \
+  "0.0"
+
+status "a label carries no quantity"  400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Bad","servings":1,"items":[{"label":"salt","quantity_g":5}]}'
+status "a label is not also a food"   400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d "{\"name\":\"Bad\",\"servings\":1,\"items\":[{\"food_id\":\"$OATS\",\"quantity_g\":10,\"label\":\"salt\"}]}"
+status "a blank label is not one"     400 -X POST "$BASE/recipes" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"name":"Bad","servings":1,"items":[{"label":"   "}]}'
+
 echo "== diary"
 curl -fsS -X POST "$BASE/diary" -H "$AUTH" -H 'content-type: application/json' \
   -d "{\"logged_on\":\"2026-01-15\",\"meal\":\"breakfast\",\"recipe_id\":\"$RID\",\"recipe_servings\":1}" >/dev/null
